@@ -1,0 +1,24 @@
+Return one JSON object and nothing else:
+
+{"detailed": "...", "brief": "..."}
+
+CURRENT CANDIDATE {IDENT}.
+
+CURRENT DETAILED ({D_WORDS} words):
+{DETAILED}
+
+CURRENT BRIEF ({B_WORDS} words):
+{BRIEF}
+
+LENGTH-ONLY CORRECTION. Revise the enclosed candidate; do not recreate it
+from the source. Shorten only the reading named in the finding to the stated
+ceiling. Preserve every distinct conclusion, mechanism, quantity, condition,
+attribution, disagreement, and qualification whose loss would change the
+reader's understanding. Remove repeated framing, procedural enumeration,
+secondary examples, parallel restatements, and duplicated support first;
+then merge passages that make the same point. Leave the other reading
+byte-for-byte unchanged unless it also has a length finding. Return the same
+JSON object and nothing else.
+
+FINDINGS TO RESOLVE
+- {FINDINGS}

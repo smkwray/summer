@@ -1,0 +1,16 @@
+Write two readings of the material below, a Detailed reading and a Brief one.
+The material is {EVIDENCE_KIND}. Return one JSON object and nothing else:
+{TASK_RULES}
+{"detailed": "...", "brief": "..."}
+
+{READING_POLICY}
+
+Length. The Detailed reading is at most {D_WORDS} words and the Brief at most
+{B_WORDS}. Shorter is fine; never pad. Write the Detailed reading first. The
+Brief is a further condensation of the same material: it keeps the central
+claims with their qualifications and leaves secondary examples and branches
+out on purpose rather than packing them into a catalogue.
+
+SOURCE:
+
+{SOURCE}

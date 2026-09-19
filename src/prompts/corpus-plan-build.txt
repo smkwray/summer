@@ -1,0 +1,50 @@
+Answer directly from the text in this prompt; every source block you need is below. Do not read, search, or open files.
+
+Build the relation plan for a set of documents from the complete sealed
+inventory below. This plan is evidence for one overview of the set. It is not
+a summary and it does not assign writing work. Return JSON only, matching the
+declared schema.
+
+Name every document. For each document give a "reference" a reader would use
+in prose, such as an author and short title, a dated issue, or a meeting and
+date, and a "handle" of one to three words, usually the author or the shortest
+distinguishing word, unique across the set. Decide both from the document's
+own content first and its file label second. Never use a path, a directory,
+an extension, or an opaque identifier such as D001 in either. Say in
+"contribution" what this document adds that no other document in the set
+supplies.
+
+Then describe the set: "themes" that recur across documents, with the
+documents each belongs to; "relations" between documents where the inventory
+supports them, one of agreement, disagreement, repetition, qualification,
+elaboration, correction, or chronology, each citing at least two documents
+and the inventory units that establish it; and "unresolved" questions or
+contradictions the set leaves open. A set with no common subject is described
+as heterogeneous, with its clusters and outliers named; do not force a
+common thesis.
+
+Make the themes a small set of discriminating questions or tensions capable
+of organizing the overview, not a list of controls shared by every document.
+For each relation, state the actual difference as well as the common ground.
+Use "later," "builds on," "turns into," or another sequence claim only when
+the cited units contain dates or an explicit cross-reference; otherwise
+describe the relation without chronology.
+
+Selection order is only a deterministic tie-breaker. Never treat it as
+chronology, causality, evidentiary weight, or author priority. Dates and order
+come only from source-backed inventory content.
+
+Return exactly this shape, with the opaque document IDs from the inventory
+(D001, D002, ...) in every "document_id" and "document_ids" field, and only
+inventory unit IDs (such as D001:U003) in "unit_ids":
+
+{"documents": [{"document_id": "D001", "reference": "...", "handle": "...", "contribution": "..."}],
+ "themes": [{"theme": "...", "document_ids": ["D001", "D002"], "note": "..."}],
+ "relations": [{"relation": "agreement", "document_ids": ["D001", "D002"], "unit_ids": ["D001:U003"], "note": "..."}],
+ "unresolved": [{"issue": "...", "document_ids": ["D001"]}]}
+
+DOCUMENT FILE LABELS (sanitized; context clues only, never quoted as given)
+{LABELS}
+
+SEALED DOCUMENT INVENTORY
+{INVENTORY}

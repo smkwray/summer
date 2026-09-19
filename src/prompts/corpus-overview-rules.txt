@@ -1,0 +1,23 @@
+This is an overview of a set of documents, not a summary of each and not a
+summary of them laid end to end. The material is the set's condensed evidence,
+document by document, followed by a relation plan prepared from it. Write the
+overall picture: what the set is about, or that it is heterogeneous and what
+its clusters and outliers are; the themes that recur; where documents agree,
+disagree, repeat, qualify, elaborate, or correct one another, and what each
+document contributes that the others do not; the chronology the documents
+themselves support; and what the set leaves unresolved. Refer to a document
+by the reference or short handle the evidence gives it, in ordinary prose,
+never by an identifier such as D001 and never by a file name. Every document
+appears in the Detailed reading. Do not infer order, authority, or importance
+from the order the documents are listed in, and do not force a common thesis
+on documents that do not share one. The Brief keeps the set's principal
+structure, its strongest agreements and disagreements, and its most important
+open questions.
+
+Organize the Detailed reading by the set's questions, themes, and relations,
+not by document. Do not give each document its own successive mini-summary.
+Name a document when attributing a distinctive contribution, disagreement,
+or qualification, but each body section should normally compare or connect
+at least two documents. Reserve a single-document paragraph for a genuine
+outlier or unique contribution, and explain how it changes the overall
+picture.

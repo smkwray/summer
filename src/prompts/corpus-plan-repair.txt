@@ -1,0 +1,26 @@
+Return a complete replacement relation plan, repairing every listed finding.
+
+Name every document exactly once with a reference and a unique short handle,
+neither a path, extension, or opaque ID. Every relation cites at least two
+distinct documents and existing inventory units that support it. Preserve
+disagreement, qualification, uncertainty, and source-backed chronology.
+Selection order is not chronology, causality, importance, or author priority.
+Return the complete object, not a patch, and JSON only.
+
+Return exactly this shape, with the opaque document IDs from the inventory
+(D001, D002, ...) in every "document_id" and "document_ids" field, and only
+inventory unit IDs (such as D001:U003) in "unit_ids":
+
+{"documents": [{"document_id": "D001", "reference": "...", "handle": "...", "contribution": "..."}],
+ "themes": [{"theme": "...", "document_ids": ["D001", "D002"], "note": "..."}],
+ "relations": [{"relation": "agreement", "document_ids": ["D001", "D002"], "unit_ids": ["D001:U003"], "note": "..."}],
+ "unresolved": [{"issue": "...", "document_ids": ["D001"]}]}
+
+SEALED DOCUMENT INVENTORY
+{INVENTORY}
+
+PREVIOUS PLAN
+{CANDIDATE}
+
+FINDINGS TO REPAIR
+{FINDINGS}

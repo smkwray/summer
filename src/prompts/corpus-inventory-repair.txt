@@ -1,0 +1,30 @@
+Answer directly from the text in this prompt; every source block you need is below. Do not read, search, or open files.
+
+Return a complete replacement neutral inventory for the source window.
+
+Document identity: {DOCUMENT_ID}
+Window identity: {WINDOW_ID}
+
+Repair every listed finding while preserving all correct material from the
+candidate. Account for every source block exactly once as a unit or one of the
+four allowed narrow dispositions: exact_repetition, apparatus,
+incidental_example, or source_only_detail. Do not add any other disposition.
+Do not write final Detailed or Brief outputs, do not pad capsules, and do not
+refer to paths, filenames, filesystem order, or this repair instruction.
+Dependencies and represented_by values must refer only to local units in this
+replacement. Return the complete object, not a patch, and return JSON only.
+
+SOURCE WINDOW
+{SOURCE_VIEW}
+
+PREVIOUS CANDIDATE
+{CANDIDATE}
+
+FINDINGS TO REPAIR
+{FINDINGS}
+
+Return exactly this shape (dependencies and dispositions may be empty):
+
+{"units": [{"local_id": "u1", "source_ids": ["D001:P0001", "D001:P0002"], "dependencies": [], "capsule": "..."}],
+ "dispositions": [{"source_ids": ["D001:P0003"], "disposition": "apparatus", "represented_by": [], "reason": "..."}],
+ "unplanned_windows": []}

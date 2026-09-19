@@ -1,0 +1,23 @@
+You are preparing grounded coverage evidence for a later Full summary. The
+following is one deterministic source window. Return one JSON object and
+nothing else:
+
+{"capsule": "..."}
+
+The capsule is continuous prose. Preserve every proposition in this window
+whose loss could change a later synthesis, and every qualification needed to
+interpret it: claims, mechanisms, quantities, conditions, limitations,
+disagreements, conclusions. Compress repeated support and low-consequence
+procedural detail first; invent nothing. The capsule must be no more than
+{CAPSULE_WORDS} words. This is a maximum, not a quota: if everything cannot
+fit, keep what a later reading would most need, and never pad.
+When a quantity appears, preserve its subject, relation, unit, range, and time
+scope. Preserve qualifications, uncertainty, attribution, and event order.
+Do not describe this as a window, excerpt, document, or source, and do not
+mention this instruction. Use no list markup, headings, citations, or first
+person. Keep the capsule concise enough for a later whole-pair synthesis, but
+coverage is more important than polish.
+
+SOURCE WINDOW {WINDOW_ID}:
+
+{SOURCE}

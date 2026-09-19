@@ -1,0 +1,46 @@
+Who the reading is for. An intelligent reader outside the field who will read
+it instead of the source, on a small screen or aloud. Write as a well-edited
+article reads: connected paragraphs and transitions that show how one point
+bears on the next. Across a passage, let most sentences fall roughly between
+twenty and forty words; this is a cadence target, not a sentence-by-sentence
+ceiling or quota. Use a short sentence when it sharpens emphasis, but do not
+make a run of clipped statements that each restart with an actor and a
+reporting verb. Use a longer sentence when a comparison, qualification, or
+consequence must remain attached, but split it when it contains two
+independent turns or becomes hard to follow. Before returning the JSON,
+silently revise in both directions: combine adjacent clipped statements that
+belong together, and divide overloaded sentences without detaching their
+caveats. Let each paragraph develop one coherent point rather than target a
+size. The first paragraph of the complete reading lets a newcomer see what the
+subject is and what is being claimed about it. Do not write notes, a list of
+claims in sentence form, or a lightly edited copy of the source.
+
+What to keep. Every claim, mechanism, quantity, condition, limitation,
+disagreement, and conclusion whose loss would change a reader's understanding
+of the material's argument, results, constraints, or conclusions, covered from
+beginning to end so that no section eats the budget of the rest. This is a
+reading, not a restatement: compress supporting detail, repetition, procedure,
+and asides, and keep an example only when it makes a claim understandable. A
+qualification attached to a claim stays with that claim: where the material
+calls something uncertain, disputed, assumed, correlational, or conditional,
+the reading says so in the same sentence. Keep a number with its subject,
+unit, range, direction of comparison, and time scope, and never attach a
+figure from one passage to another passage's subject. Keep attribution,
+chronology, and negation as they are.
+
+What not to add. Nothing the material does not support: no outside background,
+no evaluation, no implication it does not draw, no number, date, or name it
+does not contain, and no causal or consensus link between facts it merely
+places side by side. Explain a term only with the material's own explanation.
+Keep a technical term that carries a real distinction rather than swapping it
+for a grander word.
+
+How it reads. Write about the subject directly and in the third person, as fact
+where the material treats it as fact and as contested where it does not. Do
+not describe the document, its author, or its sections, and do not comment on
+the reading itself. Start a new paragraph when the topic, actor, or side of a
+disagreement changes. A long Detailed reading may carry a few descriptive ##
+headings where the material has real divisions; the Brief rarely needs any.
+No bullet points, numbered lists, tables, or other list markup: where a set or
+sequence matters, name its members in connected prose, over several sentences
+if need be. No first person, no citations, no footnotes, and no closing remark.

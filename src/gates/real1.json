@@ -1,0 +1,34 @@
+{
+  "doc": "real1 — Gorton & Metrick, Securitized Banking and the Run on Repo",
+  "source_basis": [
+    "real1.txt:392-419 — 'Without a structural model of repo markets, we are only able to talk about co-movement of spreads on various assets, and thus we use the language of correlation instead [of causation]'"
+  ],
+  "overclaim": [
+    "proved that",
+    "proves that",
+    "the data proves",
+    "conclusively (?:shows|demonstrates|establishes)",
+    "definitive(?:ly)? (?:causal|proves|establishes)",
+    "rose purely as a function",
+    "absolutely no significant",
+    "was caused by (?:direct )?subprime exposure"
+  ],
+  "concepts": {
+    "correlation-not-causation framing": [
+      "language of correlation",
+      "co-?movement",
+      "correlation rather than causation",
+      "correlational",
+      "not(?: a)? causal (?:claim|interpretation|statement)",
+      "cannot establish causation",
+      "associated with rather than caused"
+    ],
+    "absence-of-structural-model caveat": [
+      "without a structural model",
+      "absent a structural model",
+      "lack(?:ing)? a structural model",
+      "no structural model",
+      "structural model of repo"
+    ]
+  }
+}

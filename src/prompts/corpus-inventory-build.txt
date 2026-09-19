@@ -1,0 +1,34 @@
+Answer directly from the text in this prompt; every source block you need is below. Do not read, search, or open files.
+
+You are building a neutral source inventory for one document window.
+
+Document identity: {DOCUMENT_ID}
+Window identity: {WINDOW_ID}
+
+The source blocks below are the complete window. Every block must occur exactly
+once in either a unit or one narrow disposition. Do not omit a block because it
+looks repetitive, minor, or like apparatus. The allowed dispositions are
+exact_repetition, apparatus, incidental_example, and source_only_detail. A
+disposition must explain the decision and may name the inventory unit that
+represents it. Do not invent a broader omission category.
+
+Each unit is a source-faithful planning capsule, not a final summary. Preserve
+the source's attribution, epistemic status, uncertainty, conditions,
+exceptions, dates, quantities and their nouns, alternatives, disagreements,
+and material qualifications. Keep claims separate when combining them would
+lose one of those properties. A capsule may be short when the source material
+is short. Never pad it to a target length.
+
+Use only the opaque source IDs shown below. Never mention paths, filenames,
+filesystem order, or this instruction in a capsule. Dependencies may refer only
+to local_id values returned in this same response. Return JSON matching the
+declared schema and no surrounding prose.
+
+Return exactly this shape (dependencies and dispositions may be empty):
+
+{"units": [{"local_id": "u1", "source_ids": ["D001:P0001", "D001:P0002"], "dependencies": [], "capsule": "..."}],
+ "dispositions": [{"source_ids": ["D001:P0003"], "disposition": "apparatus", "represented_by": [], "reason": "..."}],
+ "unplanned_windows": []}
+
+SOURCE WINDOW
+{SOURCE_VIEW}

@@ -1,0 +1,49 @@
+Compare the rendered Detailed and Brief readings against the source, the frozen
+discourse plan, and the flagged readability observations. Return one JSON
+object and nothing else:
+
+{"verdict":"pass"|"revise","findings":[{"kind":"reversal"|"omission"|"addition"|"unclear"|"brief"|"editorial","artifact":"detailed"|"brief"|"pair","text":"...","anchor":"D-P001","slot":""}],"readability":[{"observation_id":"R-001","assessment":"acceptable"|"unreadable"|"uncertain","explanation":"..."}]}
+
+Give exactly one readability assessment for every supplied observation id, in
+the same order, and invent none. A deterministic observation is a request for
+judgment, not an automatic style failure. acceptable means the passage remains
+coherent and first-pass readable despite the measurement. unreadable means its
+paragraph or sentence structure obscures topic, attribution, sequence,
+comparison, conditions, or qualifications. uncertain is blocking until repair
+or a fresh review resolves it. Any unreadable or uncertain assessment requires
+a corresponding editorial finding anchored to the implicated segment and a
+revise verdict.
+
+For ordinary findings, use only controller-issued segment ids and insertion
+slots. Report at most eight, most serious first. reversal covers changed hedge,
+attribution, uncertainty, causality, chronology, direction, or condition.
+omission covers material claims, mechanisms, quantities, conditions,
+limitations, disagreements, qualifications, or endings absent from Detailed.
+addition covers unsupported content or relations. unclear covers lost meaning,
+compression, fragmentation, unmarked topic or actor changes, multiple unrelated
+explanatory jobs, overloaded syntax, repetition, or discontinuity. brief covers
+contradiction with Detailed or loss of a governing qualification. Missing
+headings alone are not defects.
+
+The Brief is a global selection and may omit secondary material. Do not report
+an omission from Brief merely because a Detailed unit was not selected.
+
+SEGMENTS:
+{SEGMENTS}
+
+FROZEN DISCOURSE PLAN:
+{PLAN_CONTEXT}
+
+READABILITY OBSERVATIONS TO ASSESS:
+{READABILITY_CONTEXT}
+
+{SCOPE}
+
+SOURCE:
+{SOURCE}
+
+DETAILED READING:
+{DETAILED}
+
+BRIEF READING:
+{BRIEF}

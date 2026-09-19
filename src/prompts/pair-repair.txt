@@ -1,0 +1,24 @@
+
+
+CURRENT CANDIDATE {IDENT}. Revise these exact readings; do not start over.
+
+CURRENT DETAILED:
+{DETAILED}
+
+CURRENT BRIEF:
+{BRIEF}
+{SOURCE_CONTEXT}
+Fix every finding below in the candidate above and return the same JSON
+object. For a finding about content, keep every passage the findings do not
+touch, and a finding about one reading must not rewrite the other: where
+something is missing, add it from the source; where a claim lost its
+qualification, restore it; where a passage is unclear, rewrite it as full
+prose without dropping its content; where a reading is too short, extend it
+with source-supported material and no padding. For a finding that a reading
+is over its ceiling, revise that whole reading: remove supporting detail,
+procedure, repetition, and secondary examples first, recombine passages, and
+keep every claim and qualification whose loss would change the reader's
+understanding, until it is within the ceiling.
+
+FINDINGS TO RESOLVE
+- {FINDINGS}

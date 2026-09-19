@@ -1,0 +1,52 @@
+
+# Agent orchestration (contract, state, delegates) — private, never tracked
+do/
+CLAUDE.md
+AGENTS.md
+
+# Internal docs not for the repo
+docs/
+notes/
+.private-denylist
+
+# Environment
+.env
+
+# Plans
+*.plan.md
+plan.md
+plans/
+
+# Data and generated outputs (project-local working state)
+/data/
+/var/
+/outputs/
+/tmp/
+
+# Python artifacts (defense in depth)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtualenv
+.venv/
+
+# Agent worktrees (owner convention: ephemeral, device-local, never synced)
+.worktrees/
+
+# Editor / OS / agent-local
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# .githooks/ is INTENTIONALLY NOT IGNORED — it ships the pre-commit hook
+
+# Derived from the committed master art by src/make_icon.py
+src/assets/icon-source.png

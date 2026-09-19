@@ -1,0 +1,50 @@
+{
+  "doc": "real4 \u2014 Hillenbrand, The Fed and the Secular Decline in Interest Rates",
+  "source_basis": [
+    "real4.txt:175-191 \u2014 'the reaction of bond yields likely reflects only the causal impact of the information release, and not the causal impact of monetary policy itself ... evidence presented in this paper cannot distinguish between the Fed causing [the decline] and [revealing it]'",
+    "real4.txt:1916-1927,1955-1958 \u2014 conclusion calls guidance one potential explanation and leaves channels to future research"
+  ],
+  "overclaim": [
+    "definitive,? +causal +link",
+    "directly +responsible",
+    "exclusive +conduit",
+    "the +data +proves",
+    "proves +that",
+    "conclusively +(?:shows|demonstrates|establishes)",
+    "(?:establishes|demonstrates) +(?:a +)?definitive"
+  ],
+  "concepts": {
+    "information-release qualification": [
+      "information +release",
+      "release +of +(?:the +)?information",
+      "communication +(?:event|release)",
+      "announcement +effect"
+    ],
+    "release-vs-policy distinction": [
+      "(?:not|rather +than|instead +of|and +not)\\b[^.]{0,70}\\bmonetary +policy",
+      "(?:not|rather +than|instead +of)\\b[^.]{0,70}\\bpolicy +itself",
+      "(?:not|rather +than|instead +of)\\b[^.]{0,80}\\bfed +on +long-?term",
+      "not +the +fed'?s? +causal +(?:effect|impact) +on",
+      "should +not +be +interpreted +as +proving[^.]{0,60}policy",
+      "do(?:es)? +not +(?:directly +)?(?:imply|establish|mean|show) +that +the +fed +is +caus"
+    ],
+    "cannot-distinguish caveat": [
+      "cannot +distinguish",
+      "could +not +distinguish",
+      "unable +to +distinguish",
+      "unclear +(?:whether|if) +the +fed +caused",
+      "does +not +establish +that +the +fed +caused",
+      "(?:merely|just|simply) +revealed?",
+      "revelation +of",
+      "would +have +(?:happened|occurred|declined)[^.]{0,60}(?:anyway|regardless|without)",
+      "reflected +rather +than +caused",
+      "cannot(?: +[a-z-]+){0,3} +(?:distinguish|determine)",
+      "could(?: +[a-z-]+){0,3} +not(?: +[a-z-]+){0,3} +(?:distinguish|determine)"
+    ]
+  },
+  "notes": [
+    "release-vs-policy uses a contrast-word + window match. Three separate runs were failed by narrower fixed phrasings while the summary stated the caveat correctly ('rather than the causal impact of monetary policy', 'not a causal effect of the Fed on long-term interest rates'). Widen on evidence; always re-verify the known-bad 3-stage output still FAILS before trusting a widened gate.",
+    "Four separate runs were failed by this concept while the summary stated it correctly. A regex family cannot enumerate the ways a caveat can be phrased. Per the round-4 review: this gate is a regression tripwire, not a certifier -- it cannot prove the absence of epistemic inflation, and human reading remains necessary. Do not treat a 'missing concept' result as proof of a defect; read the passage first."
+  ],
+  "status": "ADVISORY for caveat presence; BLOCKING only as a regression test against the frozen known-bad control."
+}

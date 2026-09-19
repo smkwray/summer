@@ -1,0 +1,32 @@
+Plan one complete Detailed and Brief reading before any prose is written.
+Return one JSON object and nothing else:
+
+{"schema":"summer.writing-plan.v2","units":[{"unit_id":"U001","title":"...","source_ids":["S-P001"],"topic":"...","relation_to_previous":"...","governing_qualifications":["..."],"detailed_words":400,"brief_disposition":"include","brief_words":120}],"dispositions":[{"source_ids":["S-H001"],"disposition":"apparatus","represented_by":["U001"],"reason":"..."}]}
+
+The complete Detailed reading may use at most {D_WORDS} words and the Brief at
+most {B_WORDS}. Allocate both budgets across the whole source. Shorter is fine;
+never pad. Use roughly 400–800 Detailed output words as a planning scale when
+the material supports it, but split only at a genuine topic, actor, position,
+qualification, or argumentative turn. A small coherent unit need not reach a
+minimum. Brief is a global selection of the central claims and qualifications,
+not a proportional miniature of every source region. Every Brief unit must also
+be present in Detailed. brief_disposition must be exactly "include" or "omit";
+use "omit" with brief_words 0 for a Detailed unit excluded from the Brief.
+
+Account for every controller-issued source id exactly once: either in one
+unit's source_ids or in one disposition. Units must follow source order and use
+U001, U002, ... without gaps. A unit's source_ids must be in source order.
+Apparatus, exact repetition, and incidental examples may be disposed only when
+their loss changes no claim, mechanism, quantity, condition, limitation,
+disagreement, qualification, or conclusion. Use ambiguous when exclusion needs
+review. represented_by names the units that preserve anything material from a
+disposed segment.
+
+The plan is an evidence map, not draft prose. topic says the unit's explanatory
+job. relation_to_previous says how it continues, contrasts, qualifies, or turns
+from the preceding unit. governing_qualifications records caveats that must stay
+attached to the claim. Do not add outside knowledge.
+
+SOURCE SEGMENTS:
+
+{SOURCE_SEGMENTS}

@@ -1,0 +1,63 @@
+Compare the two readings below against the source and report their defects.
+{SCOPE}
+Return one JSON object and nothing else:
+
+{"verdict": "pass" | "revise", "findings": [{"kind": "...", "artifact": "...", "text": "...", "anchor": "", "slot": ""}]}
+
+Each finding names one specific, fixable defect. kind is reversal, omission,
+addition, unclear, or brief. artifact is detailed, brief, or pair. text is
+one sentence. Report at most eight, most serious first. If nothing material
+is wrong, return "pass" with an empty list; a clean verdict is a real answer.
+
+Use only the controller-issued segment ids and insertion slots listed below.
+anchor is the paragraph or heading to change, or "". slot is one of those
+slots (after:D-P004, before:B-P001, start) when the defect is an omission
+that needs a new paragraph; otherwise "". Do not invent ids.
+
+SEGMENTS:
+
+{SEGMENTS}
+
+REVERSAL. A claim the source hedges, qualifies, attributes to some people, or
+marks as uncertain, disputed, assumed, correlational, conditional, or
+contested, which a reading states plainly; or a settled source claim that a
+reading makes sound doubtful. This is the most serious defect.
+
+OMISSION. Something in the source with no counterpart in the Detailed
+reading whose loss changes the central argument or conclusion, a causal or
+procedural mechanism, a quantity needed to understand scale or comparison, a
+condition, limitation, disagreement, or qualification, or the reader's grasp
+of what happened and why it matters; an ending the reading never reaches
+counts. The loss of an example, a repetition, supporting detail, or an aside
+that changes none of these is not an omission: the reading is meant to be
+much shorter than the source.
+
+ADDITION. Anything the source does not support: outside background,
+evaluation, an implication the source does not draw, a figure attached to
+the wrong subject, a changed unit, range, direction, chronology, or
+attribution, or a causal or consensus link between facts the source only
+places side by side.
+
+UNCLEAR. A passage so compressed or fragmentary that a reader could not
+recover its claim without the source. Report this only when meaning is lost,
+not when the style is merely plain.
+
+BRIEF. The Brief reading contradicting the Detailed one, asserting something
+the Detailed one does not, or carrying a claim over without the qualification
+the source attaches to it. The Brief is a selection and is meant to leave
+things out; do not report material missing from it.
+
+Do not report length, word choice, or a missing heading, and do not ask for
+more as such: say what is missing.
+
+SOURCE:
+
+{SOURCE}
+
+DETAILED READING:
+
+{DETAILED}
+
+BRIEF READING:
+
+{BRIEF}

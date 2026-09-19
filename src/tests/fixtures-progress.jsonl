@@ -1,0 +1,14 @@
+{"event":"job_started","mode":"summarize","schema":"summer.progress.v2","scope":"batch","targets":1,"time_utc":"2000-01-01T00:00:00.000Z"}
+{"count":1,"event":"target_started","index":1,"schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:01.000Z","title":"example-document","words":1200}
+{"event":"stage","name":"reader_view","schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:02.000Z"}
+{"event":"part","index":1,"schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:03.000Z","total":3}
+{"attempt":1,"event":"model_call_started","harness":"example-cli","model":"example-model","role":"plan001","schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:04.000Z"}
+{"attempt":1,"event":"model_call","harness":"example-cli","model":"example-model","outcome":"ok","role":"plan001","schema":"summer.progress.v2","seconds":1.25,"time_utc":"2000-01-01T00:00:05.000Z"}
+{"event":"part","index":2,"schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:06.000Z","total":3}
+{"event":"stage","name":"compose","schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:07.000Z"}
+{"event":"part","index":3,"schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:08.000Z","total":3}
+{"attempt":1,"event":"model_call_started","harness":"example-cli","model":"example-model","role":"write001","schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:09.000Z"}
+{"attempt":1,"event":"model_call","harness":"example-cli","model":"example-model","outcome":"ok","role":"write001","schema":"summer.progress.v2","seconds":2.5,"time_utc":"2000-01-01T00:00:10.000Z"}
+{"event":"stage","name":"publish","schema":"summer.progress.v2","time_utc":"2000-01-01T00:00:11.000Z"}
+{"destination_unchanged":false,"event":"target_finished","exit_code":0,"index":1,"outputs":["example-output/document.summary.md","example-output/document.brief.md"],"schema":"summer.progress.v2","status":"succeeded","time_utc":"2000-01-01T00:00:12.000Z"}
+{"event":"job_finished","exit_code":0,"schema":"summer.progress.v2","status":"succeeded","time_utc":"2000-01-01T00:00:13.000Z"}

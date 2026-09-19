@@ -1,0 +1,19 @@
+Audit this relation plan against the complete sealed inventory.
+
+Every document must be named exactly once, with a non-empty reference and a
+unique short handle, neither containing a path, extension, or opaque ID.
+Every relation must cite at least two distinct documents and only inventory
+units that exist; the units cited must actually support the relation named.
+Report a theme or relation the inventory contradicts, a disagreement or
+qualification in the inventory that the plan smooths over, a chronology not
+backed by dates or statements in the inventory, a contribution claimed for a
+document that another document also supplies, and any use of selection order
+as time, causality, or importance. Style and length are not findings.
+
+Return verdict pass only with no findings. Return JSON only.
+
+SEALED DOCUMENT INVENTORY
+{INVENTORY}
+
+PROPOSED RELATION PLAN
+{CANDIDATE}

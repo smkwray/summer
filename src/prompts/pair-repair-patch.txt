@@ -1,0 +1,40 @@
+Return one JSON object and nothing else. The field name is "operation",
+not "op". Every edit must include artifact, operation, replacement, and
+finding_ids. artifact is "detailed" for D- ids and "brief" for B- ids.
+Copy sha256 values from SEGMENTS: insert uses that span's sha256 as
+anchor_sha256; a one-span replace_range uses it as range_sha256. Do not
+invent hashes. Example shape:
+
+{"base_candidate": "{IDENT}", "edits": [
+  {"artifact": "brief", "operation": "replace_range", "start": "B-P002",
+   "end": "B-P002", "range_sha256": "<sha256 of that span>",
+   "replacement": "prose", "finding_ids": ["F-001"]}
+]}
+
+CURRENT CANDIDATE {IDENT}. Revise by edits; do not return the pair.
+
+CURRENT DETAILED:
+{DETAILED}
+
+CURRENT BRIEF:
+{BRIEF}
+
+SEGMENTS:
+{SEGMENTS}
+{SOURCE_CONTEXT}
+Fix every finding below. Each edit names a controller-issued id from
+SEGMENTS. Allowed operations: insert_before, insert_after, replace_range.
+insert_before/insert_after need "anchor" and "anchor_sha256". replace_range
+needs "start", "end", and "range_sha256" of the exact bytes being replaced.
+replacement is prose that owns its transitions, including the adjacent
+sentences it must join. It may contain several paragraphs, or a short ##
+heading followed by paragraphs, when a structural finding requires a genuine
+topic boundary. Do not add a heading merely to satisfy a measurement. The
+controller preserves the outer separator around a replaced range; do not rely
+on trailing newlines. Do not re-emit unchanged passages. Do not invent ids,
+byte offsets, or "continue from where you stopped". A finding about one
+reading must not rewrite the other. No list markup, tables, first person, or
+citations.
+
+FINDINGS TO RESOLVE
+- {FINDINGS}

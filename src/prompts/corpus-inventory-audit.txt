@@ -1,0 +1,28 @@
+Answer directly from the text in this prompt; every source block you need is below. Do not read, search, or open files.
+
+Audit the proposed neutral inventory of one source window against the exact
+source blocks below.
+
+Document identity: {DOCUMENT_ID}
+Window identity: {WINDOW_ID}
+
+Check source accounting first: every source ID must occur exactly once in a
+unit or an allowed narrow disposition, no source ID may be unknown or belong
+to another document, and no dependency or represented_by reference may be
+unknown or cyclic. Then check that the capsules preserve material claims,
+attribution, dates, quantities with their nouns, uncertainty, conditions,
+exceptions, disagreement, and qualifications. An inventory is not a final
+Summary artifact, so do not demand Summary compression ratios or fixed capsule
+lengths. Any omission not covered by one of the four allowed dispositions is a
+blocking finding.
+
+Return verdict pass only with an empty findings array. Return repair when a
+bounded replacement can fix the candidate. Return blocked when the source or
+candidate cannot be audited. Every finding must identify its relevant opaque
+source or unit IDs and explain the repair needed. Return JSON only.
+
+SOURCE WINDOW
+{SOURCE_VIEW}
+
+PROPOSED INVENTORY
+{CANDIDATE}

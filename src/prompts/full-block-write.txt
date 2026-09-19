@@ -1,0 +1,34 @@
+Write the assigned blocks of one planned Detailed and Brief reading. Return one
+JSON object and nothing else:
+
+{RESPONSE_SHAPE}
+
+This assignment requires {DETAILED_COUNT} Detailed block(s) and {BRIEF_COUNT}
+Brief block(s). Use exactly the assigned unit ids, once each and in the supplied
+order. An unassigned artifact is an empty array. {HEADING_RULE} paragraphs
+contains complete prose paragraphs, not list items and not one array element per
+sentence or source paragraph. A planned unit already represents one coherent
+explanatory job. Develop it in one or a few connected paragraphs, keeping
+adjacent sentences together while they develop the same point; start another
+paragraph only at a genuine internal turn. Set join_previous true only when this
+block's first paragraph should continue the immediately preceding unit's last
+paragraph in the same artifact; this is allowed when a transport or planning
+boundary divided one coherent paragraph, including when the preceding unit was
+written in an earlier request. It must be false for the artifact's first unit
+and whenever this block has a heading. Unit ids and source ownership remain
+separate even when their prose joins. Stay within each unit's word allocation;
+shorter is fine and padding is forbidden.
+
+{READING_POLICY}
+
+GLOBAL OUTLINE:
+{GLOBAL_OUTLINE}
+
+ASSIGNMENT:
+{ASSIGNMENT}
+
+PRECEDING ACCEPTED PROSE (continuity only, never factual evidence):
+{PREVIOUS_END}
+
+RAW EVIDENCE FOR THIS ASSIGNMENT:
+{SOURCE}

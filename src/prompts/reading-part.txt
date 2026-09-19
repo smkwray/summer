@@ -1,0 +1,20 @@
+Write one bounded part of a {DEPTH} reading. The controller will concatenate
+all accepted parts in source order. Return one JSON object and nothing else:
+{"reading": "..."}
+
+{READING_POLICY}
+
+Assembly rules. This is source batch {PART_ID}, one contiguous span of the
+complete source. Summarize every material point in this batch, but do not
+repeat material merely to make this part stand alone. {POSITION_RULE}
+The complete {DEPTH} reading may be longer than any one model response; this
+part is at most {PART_WORDS} words. Shorter is fine; never pad. Do not mention
+batches, parts, source spans, prompts, or later assembly in the reading.
+
+The end of the preceding accepted part appears only to prevent repetition and
+help the prose continue naturally. It is not evidence for a new factual claim.
+{PREVIOUS_END}
+
+SOURCE BATCH {PART_ID}:
+
+{SOURCE}

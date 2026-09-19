@@ -1,0 +1,10 @@
+
+
+CURRENT CONVERSION. Revise this exact text; do not start over:
+{CANDIDATE}
+
+Fix every finding below and output only the complete corrected conversion,
+with no commentary.
+
+FINDINGS TO RESOLVE
+- {FINDINGS}
