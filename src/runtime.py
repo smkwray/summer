@@ -37,6 +37,71 @@ class BusyError(RuntimeError):
     pass
 
 
+# Credential declarations cannot give secrets a second meaning as application
+# controls. This policy is pure: configuration ingestion calls it before any
+# routing/options/import-time settings, and transports reuse it before dispatch.
+_CREDENTIAL_CONTROL_NAMES = frozenset({
+    "HARNESS", "MODEL", "PLAN_MODEL", "AUDIT_MODEL", "REPAIR_MODEL", "DEPTH",
+    "ARGV_SAFE_BYTES", "RETRIES", "CALL_TIMEOUT", "WARM_BUDGET_S", "WARM_POLL_MAX_S",
+    "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
+    "PWD", "TMPDIR", "TMP", "TEMP", "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
+    "SUMM_PROGRESS", "SUMM_ACTIVE_ROLES", "SUMM_LOCAL_ONLY", "SUMM_QUALIFICATION_COURT",
+    "SUMM_QUICK", "SUMM_QUIET", "SUMM_DEADLINE", "SUMM_ROUTE_CAPABILITIES",
+    "SUMM_ROUTE_CAPABILITY_WORDS", "SUMM_ROUTE_OUTPUT_WORDS",
+    "SUMM_ROUTE_CONTEXT_TOKENS", "SUMM_ROUTE_OUTPUT_TOKENS",
+})
+_CREDENTIAL_CONTROL_PREFIXES = (
+    "OPENCODE_", "XDG_", "SUMM_RUNTIME_", "SUMM_ROLE_", "SUMM_INSTRUCTIONS_",
+    "SUMM_WRITING_", "SUMM_RECOVERY_", "SUMM_TARGET_", "SUMM_ETA_",
+)
+
+
+def credential_envs(*, catalog=None, runtime_config=None) -> frozenset[str]:
+    """Validate declared credential names without reading any environment value.
+
+    Case folding models Windows even when validation runs on macOS. Network
+    and locale names may describe nonselected credentials; child allowlists
+    must suppress them. Process-launch, discovery and Summer controls cannot.
+    """
+    names = set()
+
+    def add(name):
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ConfigError("invalid credential environment names")
+        normalized = name.upper()
+        if (normalized in _CREDENTIAL_CONTROL_NAMES
+                or normalized.startswith(_CREDENTIAL_CONTROL_PREFIXES)
+                or normalized.endswith(("_BIN", "_EFFORT"))
+                or "_CHAIN_" in normalized
+                or normalized.startswith("SUMM_") and normalized.endswith("_REQUEST_OPTIONS")):
+            raise ConfigError(f"credential name conflicts with process controls: {name}")
+        names.add(normalized)
+
+    if isinstance(catalog, dict):
+        for spec in catalog.values():
+            if not isinstance(spec, dict):
+                continue
+            for field, declared in spec.items():
+                if "credential" not in field or not field.endswith("envs"):
+                    continue
+                if not isinstance(declared, dict):
+                    raise ConfigError("invalid credential environment names")
+                for name in declared.values():
+                    add(name)
+    if isinstance(runtime_config, dict):
+        gateways = runtime_config.get("gateways") or {}
+        for spec in gateways.values() if isinstance(gateways, dict) else ():
+            if not isinstance(spec, dict):
+                continue
+            models = spec.get("models") or {}
+            routes = (spec, *(models.values() if isinstance(models, dict) else ()))
+            for route in routes:
+                if isinstance(route, dict) and route.get("api_key_env") not in (None, ""):
+                    name = route["api_key_env"]
+                    add(name.strip() if isinstance(name, str) else name)
+    return frozenset(names)
+
+
 _RESERVED_GATEWAY_REQUEST_KEYS = frozenset({
     "model", "messages", "max_tokens", "max_completion_tokens", "stream",
 })
@@ -332,6 +397,9 @@ def config_path() -> pathlib.Path:
 
 def _validate_config(raw, source: str) -> dict:
     """Validate one already-decoded runtime snapshot."""
+    # Outside the broad configuration diagnostic: a credential conflict must
+    # report only its name, never a source path derived from an environment.
+    credential_envs(runtime_config=raw)
     try:
         if not isinstance(raw, dict):
             raise ValueError("top level must be an object")
@@ -419,19 +487,21 @@ def config() -> dict:
     if snapshot is not None:
         try:
             raw = json.loads(snapshot)
-        except Exception as e:
-            raise ConfigError(f"invalid $SUMM_RUNTIME_JSON: {e}") from e
+        except Exception:
+            raise ConfigError("invalid $SUMM_RUNTIME_JSON: expected a JSON object") from None
         return _validate_config(raw, "$SUMM_RUNTIME_JSON")
 
-    path = config_path()
-    if not path.exists():
-        return {"active_targets": 2, "harness_capacity": 1,
-                "capacities": {}, "bindings": {}, "gateways": {}}
     try:
+        # Location discovery necessarily precedes reading declarations from a
+        # file. It is read-only; diagnostics never echo the locator or its value.
+        path = config_path()
+        if not path.exists():
+            return {"active_targets": 2, "harness_capacity": 1,
+                    "capacities": {}, "bindings": {}, "gateways": {}}
         raw = json.loads(path.read_text())
-    except Exception as e:
-        raise ConfigError(f"invalid {path}: {e}") from e
-    return _validate_config(raw, str(path))
+    except Exception:
+        raise ConfigError("invalid runtime configuration file: cannot read JSON") from None
+    return _validate_config(raw, "runtime configuration file")
 
 
 def frozen_json(value: dict | None = None) -> str:

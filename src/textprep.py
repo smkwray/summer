@@ -572,6 +572,7 @@ def _repair_prompt(source: list[dict], candidate: list[dict], findings: list[dic
 
 
 def run(source_path: pathlib.Path, out_dir: pathlib.Path) -> int:
+    ms = _runner()  # Validate configuration before source or work-directory effects.
     try:
         source_text = source_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
@@ -588,7 +589,6 @@ def run(source_path: pathlib.Path, out_dir: pathlib.Path) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     evidence_root = out_dir / "text-prep"
     evidence_root.mkdir(parents=True, exist_ok=True)
-    ms = _runner()
     cleaned_all = []
     accepted_witnesses = []
     report = {"path": "text-prep", "relation_version": RELATION_VERSION,

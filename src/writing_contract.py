@@ -260,7 +260,10 @@ def planning_reduction_prompt(group: list[dict], node_id: str) -> str:
         "Return exactly one JSON object with summary, brief_candidates, and "
         "qualifications. brief_candidates may name at most eight supplied "
         "handles. Preserve conflicting results and scope-changing caveats; do "
-        "not invent handles. This node does not own source ids.\n\nNODE "
+        "not invent handles. This node does not own source ids."
+        "\n\nRESPONSE SCHEMA:\n" +
+        json.dumps(json_contract.PLAN_REDUCTION, ensure_ascii=False) +
+        "\n\nNODE "
         + node_id + "\n" + json.dumps(group, indent=2, ensure_ascii=False))
 
 
@@ -271,7 +274,8 @@ def validate_plan_reduction(value: dict, group: list[dict], node_id: str) -> dic
         raise WritingContractError(str(exc)) from exc
     known = {card["handle"] for leaf in group for card in leaf["cards"]}
     candidates = list(value.get("brief_candidates") or [])
-    if (not candidates or len(candidates) > 8
+    # Empty is valid for apparatus-only nodes (e.g. bibliography leaves).
+    if (len(candidates) > 8
             or len(candidates) != len(set(candidates))):
         raise WritingContractError(f"{node_id}: invalid candidate count")
     unknown = sorted(set(candidates) - known)
@@ -291,7 +295,9 @@ def planning_selection_prompt(nodes: list[dict], cards: list[dict],
         "supplied handle and a positive word allocation. The allocations must "
         f"sum to at most {int(brief_words)} words. Preserve the central results "
         "and their governing qualifications; do not select proportionally by "
-        "source region.\n\nREDUCTIONS:\n" +
+        "source region.\n\nRESPONSE SCHEMA:\n" +
+        json.dumps(json_contract.PLAN_BRIEF_SELECTION, ensure_ascii=False) +
+        "\n\nREDUCTIONS:\n" +
         json.dumps(nodes, indent=2, ensure_ascii=False) +
         "\n\nELIGIBLE UNIT CARDS:\n" +
         json.dumps(choices, indent=2, ensure_ascii=False))

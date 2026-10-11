@@ -18,8 +18,6 @@ the window stops repainting -- which is the exact failure this is built to fix.
 """
 from __future__ import annotations
 import datetime, json, os, pathlib, queue, shutil, subprocess, sys, threading, time, uuid
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 
 HERE = pathlib.Path(__file__).resolve().parent
 CLI = HERE / "summ_cli.py"
@@ -28,6 +26,8 @@ sys.path.insert(0, str(HERE))
 # Imported for the shared selection/manifest layer, not to duplicate the engine.
 # The UI resolves and reviews the same records the CLI consumes.
 import summ_cli
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 import selection
 import runtime
 import model_config
@@ -93,7 +93,8 @@ def roster() -> dict:
         return {}
     return {h: {r: list(v.get(r) or []) for r in ROLES}
             for h, v in cfg.items()
-            if isinstance(v, dict) and any(v.get(role) for role in ROLES)}
+            if isinstance(v, dict) and v.get("_enabled", True)
+            and any(v.get(role) for role in ROLES)}
 
 
 def model_defaults() -> dict:
@@ -527,6 +528,8 @@ class App:
                                  padx=(8, 0), pady=(10, 0))
         self.models_frame = ttk.Frame(f)
         self.models_row = 11
+        self.status = ttk.Label(f, text="Idle", anchor="w")
+        self.detail = ttk.Label(f, text="", anchor="w", foreground="#555")
         self.build_model_controls()
         self._update_affix_preview()
 
@@ -557,9 +560,7 @@ class App:
         # real discrete count, unlike elapsed time, so the bar can be honest.
         self.bar = ttk.Progressbar(f, mode="determinate", maximum=1, value=0)
         self.bar.grid(row=13, column=0, columnspan=3, sticky="ew")
-        self.status = ttk.Label(f, text="Idle", anchor="w")
         self.status.grid(row=14, column=0, columnspan=3, sticky="ew", pady=(6, 0))
-        self.detail = ttk.Label(f, text="", anchor="w", foreground="#555")
         self.detail.grid(row=15, column=0, columnspan=3, sticky="ew")
 
         self.out = ttk.Frame(f); self.out.grid(row=16, column=0, columnspan=3,
@@ -681,8 +682,7 @@ class App:
         """
         r = roster()
         harnesses = sorted(r)
-        default_h = os.environ.get("HARNESS") or ("opencode" if "opencode" in r
-                                                  else (harnesses[0] if harnesses else "agy"))
+        default_h = os.environ.get("HARNESS") or model_config.default_harness()
         # No "Run as" control. It had no model beside it and no meaning a user
         # could act on: it only decided which <HARNESS>_CHAIN_<ROLE> variable the
         # engine reads. That is derivable -- whichever harness the most roles use
@@ -799,7 +799,7 @@ class App:
         self.toggle_beside()
         self.refresh_last_out()
         # Restore the last named profile on this device. A missing/deleted
-        # preference falls back to the shared balanced profile rather than a
+        # preference falls back to the shared default profile rather than a
         # harness roster's first model.
         initial_profile = launch_profile()
         if initial_profile:
@@ -933,6 +933,15 @@ class App:
             return
         if not sel:
             return
+        try:
+            for pair in sel.values():
+                h, m, _effort = _pick(pair)
+                if h and m:
+                    model_config.require_enabled(h)
+        except runtime.ConfigError as exc:
+            self.profile.set("")
+            self._set("Profile cannot run.", str(exc))
+            return
         for role, pair in sel.items():
             if role not in self.role_h:
                 continue
@@ -989,7 +998,7 @@ class App:
             return
         self.profile_box["values"] = sorted(load_profiles())
         # Deleting the selected profile also invalidates the remembered name;
-        # launch_profile repairs it to balanced when that shared default exists.
+        # launch_profile repairs it to the shared default when it exists.
         fallback = launch_profile()
         self.profile.set(fallback)
         if fallback:
@@ -2495,6 +2504,11 @@ EXITS = {1: "the run did not complete",
 
 
 def main():
+    try:
+        model_config.validate_environment()
+    except runtime.ConfigError as exc:
+        print(f"runtime/model configuration unreadable: {exc}", file=sys.stderr)
+        return 2
     root = tk.Tk()
     style = ttk.Style()
     try:

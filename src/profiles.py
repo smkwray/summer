@@ -10,7 +10,7 @@ import model_config
 import runtime
 
 ROLES = mode_config.ROLES
-DEFAULT_PROFILE = "balanced"
+DEFAULT_PROFILE = model_config.defaults()["profile"]["name"]
 
 
 def model_defaults() -> dict:

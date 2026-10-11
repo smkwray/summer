@@ -63,6 +63,20 @@ Summ'er can use model CLIs available on `PATH` (`claude`, `agy`, `opencode`,
 Model choices and role order live in [`src/models.json`](src/models.json).
 Pipeline behavior does not depend on a particular model name.
 
+The shared default is `Opus Plan` through OpenCode and the Anthropic API:
+Opus plans, while Sonnet writes, reviews, and repairs. The desktop app remembers
+the last selected profile; a CLI invocation with
+no harness or profile uses the shared default. OpenCode v2 is required, with
+API-key authentication so sessions can stay inside the Summer work directory.
+OpenCode supplies native Anthropic prompt caching; Summer retains cache reads,
+cache writes, and reported cost in the run ledger. Reuse depends on an unchanged
+prompt prefix within the cache lifetime.
+
+A backend can be suspended by setting its `_enabled` flag to `false` in the
+model catalog. Summer rejects its saved profiles and explicit routes before
+dispatch, while preserving its model settings and credentials. Muse is
+currently suspended; restoring its flag makes it available again.
+
 Gateway settings remain on the device and are not part of this repository:
 
 - macOS: `~/Library/Application Support/summer/runtime.json`

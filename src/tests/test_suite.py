@@ -22,6 +22,15 @@ def load(name):
     return m
 
 
+def fake_cli_result(argv, returncode, stdout, stderr):
+    """Mock CLI stdout in the selected transport's current wire format."""
+    if argv and pathlib.Path(argv[0]).name == "opencode" and stdout:
+        stdout = "\n".join(json.dumps(event) for event in (
+            {"type": "text", "part": {"text": stdout}},
+            {"type": "step_finish", "part": {"reason": "stop"}}))
+    return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+
 def AF(text, kind="omission", artifact="detailed", **extra):
     """One typed pair-audit finding for fake model transports."""
     item = {"kind": kind, "artifact": artifact, "text": text}
@@ -1511,6 +1520,8 @@ class GatewayHarness(unittest.TestCase):
                            ("plan", "write", "audit", "repair")},
         }
         patches = [
+            unittest.mock.patch.object(self.ms, "_opencode_policy"),
+            unittest.mock.patch.object(self.ms, "opencode_env", return_value={}),
             unittest.mock.patch.object(self.ms, "GATEWAY_HARNESSES",
                                        frozenset({"localgw"})),
             unittest.mock.patch.object(self.ms, "HARNESSES",
@@ -1954,7 +1965,7 @@ class GatewayHarness(unittest.TestCase):
                      "gateway HTTP 413: request is too large", kind="request")), \
              unittest.mock.patch.object(
                  subprocess, "run",
-                 return_value=subprocess.CompletedProcess(
+                 return_value=fake_cli_result(
                      ["opencode"], 0, "fallback response", "")) as process:
             answer = self.ms.run("PROMPT", pathlib.Path(td),
                                  ["localgw:model-a", "opencode:cloud-fallback"],
@@ -2024,7 +2035,7 @@ class GatewayHarness(unittest.TestCase):
              unittest.mock.patch.object(self.ms.time, "sleep") as sleep, \
              unittest.mock.patch.object(
                  subprocess, "run",
-                 return_value=subprocess.CompletedProcess([], 0, "answer", "")) as process:
+                 return_value=fake_cli_result(["opencode"], 0, "answer", "")) as process:
             answer = self.ms.run(
                 "PROMPT", pathlib.Path(td),
                 ["localgw:model-a", "opencode:cloud-fallback"], "write001")
@@ -2519,6 +2530,11 @@ class CapacityFailover(unittest.TestCase):
     correctly refused to publish. The gate did its job; the failover did not."""
     ms = load("mapsum")
 
+    def setUp(self):
+        patcher = unittest.mock.patch.object(self.ms, "opencode_env", return_value={})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_codex_exhaustion_is_a_capacity_failure(self):
         for msg in ("You've hit your usage limit for GPT-5.3-Codex-Spark.",
                     "You've hit your session limit · resets 7:50pm (America/New_York)",
@@ -2560,7 +2576,7 @@ class CapacityFailover(unittest.TestCase):
             seen.append(argv)
             if len(seen) <= 2:
                 raise subprocess.TimeoutExpired(argv, 1)
-            return subprocess.CompletedProcess(argv, 0, "answer", "")
+            return fake_cli_result(argv, 0, "answer", "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2583,10 +2599,10 @@ class CapacityFailover(unittest.TestCase):
         def fake_run(argv, **_kw):
             seen.append(argv)
             if len(seen) == 1:
-                return subprocess.CompletedProcess(
+                return fake_cli_result(
                     argv, 1, "", "agent loop failed: model failed: "
                     "model stream idle timeout after 180000ms")
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2606,9 +2622,9 @@ class CapacityFailover(unittest.TestCase):
         def fake_run(argv, **_kw):
             seen.append(pathlib.Path(argv[0]).name)
             if seen[-1] == "codex":
-                return subprocess.CompletedProcess(
+                return fake_cli_result(
                     argv, 0, "You've hit your session limit · resets 7:50pm (America/New_York)\n", "")
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2631,9 +2647,9 @@ class CapacityFailover(unittest.TestCase):
         def fake_run(argv, **_kw):
             seen.append(pathlib.Path(argv[0]).name)
             if seen[-1] == "codex":
-                return subprocess.CompletedProcess(
+                return fake_cli_result(
                     argv, 1, "You've hit your session limit · resets 7:50pm", "")
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2650,7 +2666,7 @@ class CapacityFailover(unittest.TestCase):
 
         def fake_run(argv, **_kw):
             seen.append(pathlib.Path(argv[0]).name)
-            return subprocess.CompletedProcess(argv, 0, answer, "")
+            return fake_cli_result(argv, 0, answer, "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run):
@@ -2665,7 +2681,7 @@ class CapacityFailover(unittest.TestCase):
             seen.append(pathlib.Path(argv[0]).name)
             if seen[-1] == "codex":
                 raise subprocess.TimeoutExpired(argv, 1, output='{"detailed": "half', stderr="")
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2699,9 +2715,9 @@ class CapacityFailover(unittest.TestCase):
             name = pathlib.Path(argv[0]).name
             seen.append(name)
             if name == "grok":
-                return subprocess.CompletedProcess(
+                return fake_cli_result(
                     argv, 1, "", "Error: The usage limit has been reached")
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2730,8 +2746,8 @@ class CapacityFailover(unittest.TestCase):
             name = pathlib.Path(argv[0]).name
             seen.append(name)
             if name == "grok":
-                return subprocess.CompletedProcess(argv, 1, "", stall.stderr)
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+                return fake_cli_result(argv, 1, "", stall.stderr)
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2758,7 +2774,7 @@ class CapacityFailover(unittest.TestCase):
             if name == "grok":
                 raise subprocess.TimeoutExpired(
                     argv, 1, output='{"partial": ', stderr="")
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2778,9 +2794,9 @@ class CapacityFailover(unittest.TestCase):
         def fake_run(argv, **_kw):
             seen.append(argv)
             if len(seen) == 1:
-                return subprocess.CompletedProcess(
+                return fake_cli_result(
                     argv, 1, '{"partial": ', "connection reset by peer")
-            return subprocess.CompletedProcess(argv, 0, '{"ok": true}', "")
+            return fake_cli_result(argv, 0, '{"ok": true}', "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run), \
@@ -2796,8 +2812,8 @@ class CapacityFailover(unittest.TestCase):
         def fake_run(argv, **_kw):
             seen.append(argv)
             if len(seen) == 1:
-                return subprocess.CompletedProcess(argv, 1, "", "Authentication required")
-            return subprocess.CompletedProcess(argv, 0, "answer", "")
+                return fake_cli_result(argv, 1, "", "Authentication required")
+            return fake_cli_result(argv, 0, "answer", "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run):
@@ -2812,9 +2828,9 @@ class CapacityFailover(unittest.TestCase):
         def fake_run(argv, **_kw):
             seen.append(argv)
             if len(seen) == 1:
-                return subprocess.CompletedProcess(argv, 1, "",
+                return fake_cli_result(argv, 1, "",
                                                    "Authentication required")
-            return subprocess.CompletedProcess(argv, 0, "answer", "")
+            return fake_cli_result(argv, 0, "answer", "")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.object(subprocess, "run", fake_run):
@@ -2831,7 +2847,7 @@ class CapacityFailover(unittest.TestCase):
 
         def fake_run(argv, **_kw):
             seen.append(argv)
-            return subprocess.CompletedProcess(argv, 0, "answer", "")
+            return fake_cli_result(argv, 0, "answer", "")
 
         def reject(_answer):
             raise ValueError("content is not valid for this stage")
@@ -2852,7 +2868,7 @@ class CapacityFailover(unittest.TestCase):
 
         def fake_run(argv, **_kw):
             seen.append(argv)
-            return subprocess.CompletedProcess(argv, 0, "answer", "")
+            return fake_cli_result(argv, 0, "answer", "")
 
         raw = json.dumps({
             chain[0]: {"context_tokens": 10, "output_tokens": 10},
@@ -2873,7 +2889,7 @@ class CapacityFailover(unittest.TestCase):
                                          {"SUMM_TARGET_DEADLINE_UNIX": "0"}), \
                 unittest.mock.patch.object(subprocess, "run") as process:
             with self.assertRaises(self.ms.Abort):
-                self.ms.run("prompt", pathlib.Path(td), ["grok:grok-4.6"],
+                self.ms.run("prompt", pathlib.Path(td), ["grok:grok-4.7"],
                             "write001")
         process.assert_not_called()
 
@@ -2883,7 +2899,7 @@ class CapacityFailover(unittest.TestCase):
 
         def fake_run(argv, **_kw):
             seen.append(argv)
-            return subprocess.CompletedProcess(argv, 1, "", "connection reset")
+            return fake_cli_result(argv, 1, "", "connection reset")
 
         with tempfile.TemporaryDirectory() as td, \
                 unittest.mock.patch.dict(os.environ,
@@ -3135,8 +3151,9 @@ class HarnessSelectionIsNotSilentlyOverridden(unittest.TestCase):
         out = self._doctor(env_harness="opencode", flag="agy").stdout
         self.assertIn("(agy, run harness)", out, "--harness did not win over HARNESS=")
 
-    def test_default_is_agy_when_neither_is_given(self):
-        self.assertIn("(agy, run harness)", self._doctor().stdout)
+    def test_default_is_the_shared_profile_backend(self):
+        harness = load("model_config").default_harness()
+        self.assertIn(f"({harness}, run harness)", self._doctor().stdout)
 
     def test_an_unknown_harness_is_refused_loudly(self):
         r = self._doctor(env_harness="bogus")
@@ -3249,7 +3266,7 @@ class RolesCanSplitAcrossHarnesses(unittest.TestCase):
         def fake_run(argv, **kw):
             seen.append(argv)
             rc, out, err = outcomes[min(len(seen) - 1, len(outcomes) - 1)]
-            return subprocess.CompletedProcess(argv, rc, out, err)
+            return fake_cli_result(argv, rc, out, err)
         return seen, fake_run
 
     def setUp(self):
@@ -3257,6 +3274,12 @@ class RolesCanSplitAcrossHarnesses(unittest.TestCase):
         # is under test, not the sleep between attempts.
         s = unittest.mock.patch.object(self.ms.time, "sleep", lambda *_: None)
         s.start(); self.addCleanup(s.stop)
+        patcher = unittest.mock.patch.object(self.ms, "_opencode_policy")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = unittest.mock.patch.object(self.ms, "opencode_env", return_value={})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_a_qualified_entry_selects_its_own_harness(self):
         h, m = self.ms.split_entry("claude:sonnet", "opencode")
@@ -4153,7 +4176,8 @@ class UIIsAClientOfTheCLI(unittest.TestCase):
         src = (ENG / "summ_ui.py").read_text()
         self.assertIn('"model_call_started"', src)
         ms = (ENG / "mapsum.py").read_text()
-        i, j = ms.index("t0 = time.monotonic()"), ms.index("subprocess.run(")
+        i = ms.index("t0 = time.monotonic()")
+        j = ms.index("subprocess.run(", i)
         self.assertIn('emit("model_call_started"', ms[i:j],
                       "the start event is not emitted before the call runs")
 
@@ -6124,6 +6148,28 @@ class BoundedSourceIndexPlan(unittest.TestCase):
         self.assertEqual([unit["unit_id"] for unit in plan["units"]],
                          [f"U{i:03d}" for i in range(1, len(plan["units"]) + 1)])
 
+    def test_cli_planning_prompts_carry_the_enforced_response_schemas(self):
+        _source, ceilings, _leaves, pairs = self.fixture()
+        group = self.wc.planning_reduction_groups(pairs)[0]
+        cards = [card for leaf, plan in pairs
+                 for card in self.wc._fragment_cards(leaf, plan)]
+        nodes = [{"summary": "central result",
+                  "brief_candidates": [cards[0]["handle"]],
+                  "qualifications": []}]
+        prompts = (
+            (self.wc.planning_reduction_prompt(group, "N001"),
+             self.jc.PLAN_REDUCTION),
+            (self.wc.planning_selection_prompt(nodes, cards, ceilings["brief"]),
+             self.jc.PLAN_BRIEF_SELECTION))
+        for prompt, enforced in prompts:
+            supplied, _end = json.JSONDecoder().raw_decode(
+                prompt.split("RESPONSE SCHEMA:\n", 1)[1])
+            self.assertEqual(supplied, enforced)
+        with self.assertRaises(self.wc.WritingContractError):
+            self.wc.validate_plan_selection({"brief_units": [{
+                "handle": cards[0]["handle"], "word_allocation": 120}]},
+                cards, ceilings["brief"])
+
     def test_fragment_rejects_missing_plus_duplicate_ownership(self):
         _source, _ceilings, leaves, _pairs = self.fixture()
         leaf = leaves[0]
@@ -6606,6 +6652,108 @@ class BoundedRoleRecovery(unittest.TestCase):
         current["findings"] = ["Add a qualification."]
         with self.assertRaises(ValueError):
             self.pr.repair_turn(current, force_patch=True, bounded=True)
+
+
+class BoundedMechanicalRepair(unittest.TestCase):
+    """Local mechanical witnesses must not veto a scoped semantic correction."""
+
+    def run_pair(self, anchored=True):
+        fs, ss, pp = load("fullsum"), load("shortsum"), load("pair_patch")
+        detailed = "\n\n".join([
+            "Background evidence remains conditional. " * 8,
+            "We describe limited evidence. " * 8,
+            "The effect is certain and causal. " * 8,
+        ]).strip()
+        brief = ("Our interpretation establishes causation. " * 6).strip()
+        replacements = {
+            ("detailed", "D-P002"): "The evidence remains limited. " * 5,
+            ("detailed", "D-P003"): "Causation remains unproven. " * 8,
+            ("brief", "B-P001"): "The interpretation leaves causation unproven. " * 6,
+        }
+        segments = pp.segment_pair(detailed, brief)
+        calls = []
+
+        class Fake:
+            AUDIT_MODELS = REPAIR_MODELS = ["producer"]
+
+            def run(self, prompt, out_dir, chain, stage, validate=None, **kwargs):
+                calls.append((stage, prompt))
+                if "audit" in stage:
+                    findings = ([] if "reaudit" in stage else [{
+                        "kind": "reversal", "artifact": "detailed",
+                        "text": "Retain the uncertainty about causation.",
+                        "anchor": "D-P003" if anchored else "", "slot": "",
+                    }])
+                    ids = re.findall(r'"observation_id": "(R-\d+)"', prompt)
+                    value = {"verdict": "revise" if findings else "pass",
+                             "findings": findings, "readability": [
+                                 {"observation_id": ident,
+                                  "assessment": "acceptable",
+                                  "explanation": "The explanation is readable."}
+                                 for ident in ids]}
+                elif "revise" in stage:
+                    edits = []
+                    for (artifact, ident), replacement in replacements.items():
+                        segment = next(item for item in segments[artifact]
+                                       if item["id"] == ident)
+                        edits.append({
+                            "artifact": artifact, "operation": "replace_range",
+                            "start": ident, "end": ident,
+                            "range_sha256": segment["sha256"],
+                            "replacement": replacement.strip(),
+                            "finding_ids": (["F-001"] if ident == "D-P003"
+                                            else ["F-002", "F-004"]
+                                            if ident == "D-P002" else ["F-003"]),
+                        })
+                    value = {"base_candidate": segments["candidate"], "edits": edits}
+                else:
+                    raise AssertionError(stage)
+                raw = json.dumps(value)
+                if validate:
+                    validate(raw)
+                return raw
+
+        source = "Evidence is conditional and causation is unproven. " + "context " * 1_000
+        with tempfile.TemporaryDirectory() as td:
+            out = pathlib.Path(td)
+            rc = fs._run_pair(
+                source=source, review_source=source, out_dir=out,
+                total=len(source.split()), source_sha256=hashlib.sha256(
+                    source.encode()).hexdigest(), ms=Fake(), ss=ss,
+                base_prompt="Source-accounted repair.", audit_tpl=fs.pair_review.audit_template("v2"),
+                ceilings={"detailed": 100, "brief": 50}, fit={},
+                route="writing-contract-v2", label="full-v2",
+                initial_stage="full-v2-write", stage_prefix="full-v2",
+                result_options=fs.RESULT_REQUEST_OPTIONS,
+                audit_options=fs.AUDIT_V2_REQUEST_OPTIONS,
+                initial_pair=(detailed, brief), contract_version="v2")
+            report = json.loads((out / "full-report.json").read_text())
+            published = ((out / "detailed.md").read_text(),
+                         (out / "brief.md").read_text())
+        return rc, report, calls, published
+
+    def test_mixed_mechanical_and_semantic_findings_reach_one_scoped_repair(self):
+        rc, report, calls, published = self.run_pair()
+        self.assertEqual(rc, 0)
+        self.assertEqual((report["selected"], report["repair"], report["status"]),
+                         ("revise-1", "once", "pass"))
+        repairs = [prompt for stage, prompt in calls if "revise" in stage]
+        self.assertEqual(len(repairs), 1)
+        self.assertIn("mechanical detailed anchor=D-P002", repairs[0])
+        self.assertIn("mechanical brief anchor=B-P001", repairs[0])
+        self.assertEqual(len(re.findall(
+            r"mechanical (?:detailed|brief) anchor=[^\n]+ first person", repairs[0])), 2)
+        self.assertIn("reversal detailed anchor=D-P003", repairs[0])
+        self.assertIn("the detailed reading is", repairs[0])
+        self.assertNotIn("first person", load("shortsum").defects(published[0], ""))
+        self.assertNotIn("first person", load("shortsum").defects(published[1], ""))
+
+    def test_local_mechanical_witness_does_not_scope_unknown_semantic_finding(self):
+        rc, report, calls, _published = self.run_pair(anchored=False)
+        self.assertEqual(rc, 0)
+        self.assertEqual((report["selected"], report["repair"], report["status"]),
+                         ("initial", "unavailable", "open_findings"))
+        self.assertFalse(any("revise" in stage for stage, _prompt in calls))
 
 
 class DiscoursePlanContract(unittest.TestCase):
@@ -9981,7 +10129,8 @@ class ModelsAreChosenInTheWindowWithoutNamingAnyHere(unittest.TestCase):
         # The committed backups follow, in order, so an exhausted route never
         # leaves the chain empty.
         self.assertEqual(env["OPENCODE_CHAIN_PLAN"].split()[1:],
-                         ["codex:gpt-5.6-luna", "agy:gemini-3.1-pro-high", "claude:sonnet"])
+                         ["codex:gpt-6-luna", "codex:gpt-5.6-luna",
+                          "agy:gemini-3.1-pro-high", "claude:claude-sonnet-5-5"])
         self.assertNotIn("OPENCODE_CHAIN_WRITE", env)
 
     def test_a_configurable_backup_is_appended_to_every_selected_role(self):
@@ -10029,10 +10178,10 @@ class ModelsAreChosenInTheWindowWithoutNamingAnyHere(unittest.TestCase):
     def test_default_backup_is_luna_high_from_the_model_roster(self):
         defaults = self.ui.model_defaults()["fallback"]
         self.assertIsInstance(defaults, list)
-        self.assertEqual(["codex", "agy", "claude"], [d["harness"] for d in defaults])
+        self.assertEqual(["codex", "codex", "agy", "claude"], [d["harness"] for d in defaults])
         defaults = defaults[0]
         self.assertEqual("codex", defaults["harness"])
-        self.assertEqual("gpt-5.6-luna", defaults["model"])
+        self.assertEqual("gpt-6-luna", defaults["model"])
         self.assertEqual("high", defaults["effort"])
         env = self.ui.role_env(
             "grok", {"write": ("grok", "primary")},
@@ -10149,8 +10298,8 @@ class LogicalModelFamiliesFreezeToExactRoutes(unittest.TestCase):
              "effort"),
             ("opencode", "openai/gpt-5.3-codex-spark", "OPENCODE_VARIANT",
              "medium", "variant"),
-            ("grok", "grok-4.6", "GROK_EFFORT", "xhigh", "effort"),
-            ("claude", "sonnet", "CLAUDE_EFFORT", "low", "effort"),
+            ("grok", "grok-4.7", "GROK_EFFORT", "xhigh", "effort"),
+            ("claude", "claude-sonnet-5-5", "CLAUDE_EFFORT", "low", "effort"),
         )
         for harness, model, variable, value, option in cases:
             with self.subTest(harness=harness), unittest.mock.patch.dict(
@@ -10396,14 +10545,30 @@ class ProfilesAndAStableWindow(unittest.TestCase):
         # A preference is not project state and must not reach the repo.
         self.assertNotIn(str(ENG), str(self.real))
 
+    def test_disabled_profile_is_refused_without_changing_models(self):
+        disabled = next(h for h, spec in self.ui.model_config.roster().items()
+                        if spec.get("_enabled") is False)
+        roster = self.ui.model_config.roster()[disabled]
+        self.ui.save_profiles({"parked": {
+            role: [disabled, roster[role][0]] for role in self.ui.ROLES}})
+        before = {r: (self.app.role_h[r].get(), self.app.role_vars[r].get())
+                  for r in self.ui.ROLES}
+        self.app.profile.set("parked")
+        self.app.apply_profile()
+        after = {r: (self.app.role_h[r].get(), self.app.role_vars[r].get())
+                 for r in self.ui.ROLES}
+        self.assertEqual(before, after)
+        self.assertEqual(self.app.profile.get(), "")
+        self.assertNotEqual(self.ui.load_last_profile(), "parked")
+
     def test_a_fresh_device_gets_the_shared_default_profile(self):
         # Preferences deliberately do not sync.  Without a shared default, a
-        # second device has no balanced profile and opens on roster order.
+        # second device has no default profile and opens on roster order.
         self.assertFalse((self.tmp / "profiles.json").exists())
         profiles = self.ui.load_profiles()
-        self.assertIn("balanced", profiles)
+        self.assertIn(self.ui.DEFAULT_PROFILE, profiles)
         spec = self.ui.model_defaults()["profile"]
-        self.assertEqual(profiles["balanced"],
+        self.assertEqual(profiles[self.ui.DEFAULT_PROFILE],
                          {role: spec[role] for role in self.ui.ROLES})
 
     def test_malformed_profiles_fail_closed_instead_of_opening_balanced(self):
@@ -10413,12 +10578,12 @@ class ProfilesAndAStableWindow(unittest.TestCase):
 
     def test_saving_a_custom_profile_does_not_snapshot_balanced(self):
         value = self.ui.load_profiles()
-        value["custom"] = {role: list(value["balanced"][role])
+        value["custom"] = {role: list(value[self.ui.DEFAULT_PROFILE][role])
                            for role in self.ui.ROLES}
         self.ui.save_profiles(value)
         stored = json.loads((self.tmp / "profiles.json").read_text())
         self.assertIn("custom", stored)
-        self.assertNotIn("balanced", stored)
+        self.assertNotIn(self.ui.DEFAULT_PROFILE, stored)
 
     def test_profile_write_failure_preserves_the_previous_file(self):
         first = {"first": {role: ["agy", self.ui.roster()["agy"][role][0]]
@@ -10439,7 +10604,7 @@ class ProfilesAndAStableWindow(unittest.TestCase):
 
     def test_last_named_profile_is_restored_on_a_new_window(self):
         profiles = self.ui.load_profiles()
-        profiles["fast"] = {role: list(profiles["balanced"][role])
+        profiles["fast"] = {role: list(profiles[self.ui.DEFAULT_PROFILE][role])
                              for role in self.ui.ROLES}
         self.ui.save_profiles(profiles)
         self.ui.save_last_profile("fast")
@@ -10447,7 +10612,7 @@ class ProfilesAndAStableWindow(unittest.TestCase):
 
     def test_deleted_last_profile_falls_back_to_balanced(self):
         profiles = self.ui.load_profiles()
-        profiles["fast"] = {role: list(profiles["balanced"][role])
+        profiles["fast"] = {role: list(profiles[self.ui.DEFAULT_PROFILE][role])
                              for role in self.ui.ROLES}
         self.ui.save_profiles(profiles)
         self.ui.save_last_profile("fast")
@@ -10473,10 +10638,10 @@ class ProfilesAndAStableWindow(unittest.TestCase):
     def test_a_device_profile_overrides_the_shared_default(self):
         fb = self.ui.model_defaults()["fallback"]
         fb = fb[0] if isinstance(fb, list) else fb   # backups are an ordered list
-        local = {"balanced": {r: [fb["harness"], fb["model"]]
+        local = {self.ui.DEFAULT_PROFILE: {r: [fb["harness"], fb["model"]]
                               for r in self.ui.ROLES}}
         self.ui.save_profiles(local)
-        self.assertEqual(self.ui.load_profiles()["balanced"], local["balanced"])
+        self.assertEqual(self.ui.load_profiles()[self.ui.DEFAULT_PROFILE], local[self.ui.DEFAULT_PROFILE])
 
     def test_an_unnamed_profile_is_not_saved(self):
         self.app.profile.set("   "); self.app.save_profile()
@@ -11144,8 +11309,8 @@ class GrokIsWiredLikeEveryOtherHarness(unittest.TestCase):
                                     f"{harness} {flag} is relative")
 
     def test_a_qualified_entry_can_name_it(self):
-        self.assertEqual(self.ms.split_entry("grok:grok-4.6", "opencode"),
-                         ("grok", "grok-4.6"))
+        self.assertEqual(self.ms.split_entry("grok:grok-4.7", "opencode"),
+                         ("grok", "grok-4.7"))
 
     def test_pasted_text_is_named_from_what_the_model_wrote(self):
         """"clipboard.summary.md" is not a filename when there are two.
@@ -11251,7 +11416,7 @@ class GrokIsWiredLikeEveryOtherHarness(unittest.TestCase):
 
     def test_the_window_opens_on_the_default_profile(self):
         ui = load("summ_ui")
-        self.assertEqual("balanced", ui.DEFAULT_PROFILE)
+        self.assertEqual(ui.model_defaults()["profile"]["name"], ui.DEFAULT_PROFILE)
         self.assertIn(ui.DEFAULT_PROFILE, ui.load_profiles(),
                       "the default profile must exist or the window opens on "
                       "roster ordering, which is not a decision")
@@ -11294,10 +11459,12 @@ class GrokIsWiredLikeEveryOtherHarness(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_codex_defaults_to_luna(self):
+    def test_codex_defaults_to_the_declared_cloud_backup(self):
         cfg = json.loads((ENG / "models.json").read_text())
         for role in ("plan", "write", "audit", "repair"):
-            self.assertEqual("gpt-5.6-luna", cfg["codex"][role][0])
+            self.assertEqual(cfg["_defaults"]["fallback"][0]["model"],
+                             cfg["codex"][role][0])
+            self.assertIn("gpt-6-luna", cfg["codex"][role])
 
     def test_artifacts_can_be_collected_into_one_directory(self):
         cli = load("summ_cli")
@@ -11401,9 +11568,9 @@ class GrokIsWiredLikeEveryOtherHarness(unittest.TestCase):
 
     def test_a_profile_names_a_model_for_every_role_it_sets(self):
         ui = load("summ_ui")
-        picks = {"write": ("grok", "grok-4.6"), "audit": ("claude", "sonnet")}
+        picks = {"write": ("grok", "grok-4.7"), "audit": ("claude", "sonnet")}
         env = ui.role_env("grok", picks)
-        self.assertEqual("grok-4.6", env["GROK_CHAIN_WRITE"].split()[0])
+        self.assertEqual("grok-4.7", env["GROK_CHAIN_WRITE"].split()[0])
         # A role on ANOTHER harness must be written qualified, or the run's own
         # CLI would be handed a model identifier it has never heard of.
         self.assertEqual("claude:sonnet", env["GROK_CHAIN_AUDIT"].split()[0])
@@ -11438,6 +11605,682 @@ class GrokIsWiredLikeEveryOtherHarness(unittest.TestCase):
                 continue
             self.assertNotIn("_comment", spec)
             self.assertNotIn("_admitted", spec)
+
+
+class CredentialBoundaryBootstrap(unittest.TestCase):
+    """Credentials must be rejected before the first parent-control read.
+
+    Each probe starts a new interpreter with the collision already present and
+    uses production source/config files. No engine is imported before the
+    observation hooks; later transport-only mocks cannot satisfy this court.
+    """
+    SECRET = "SYNTHETIC-SECRET-MUST-NOT-BE-READ"
+    MARKER = "CREDENTIAL_BOOTSTRAP_OBSERVATION="
+    CHILD = r"""
+import json, os, pathlib, runpy, sys
+source, entry, watched = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3].upper()
+sys.path.insert(0, str(source))
+observed = {"reads": [], "calls": [], "effects": []}
+original_getitem = os._Environ.__getitem__
+def getitem(env, key):
+    if str(key).upper() == watched:
+        observed["reads"].append(str(key))
+    return original_getitem(env, key)
+os._Environ.__getitem__ = getitem
+forbidden = {
+    "summ_cli.py": {"freeze_model_routes", "doctor"},
+    "mapsum.py": {"_default_agy_binary", "effective_option", "_role_options",
+                  "command", "opencode_env", "_lean_dir", "_pg", "run"},
+    "progress.py": {"start", "emit"},
+}
+def profile(frame, event, arg):
+    if event == "call":
+        file = pathlib.Path(frame.f_code.co_filename)
+        name = frame.f_code.co_name
+        if file.parent == source and name in forbidden.get(file.name, ()):
+            observed["calls"].append(file.name + ":" + name)
+def audit(event, args):
+    write = event == "open" and (int(args[2]) & (
+        os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
+    if write or event in {"os.mkdir", "os.rename", "os.remove", "os.system",
+                          "subprocess.Popen", "socket.connect"} or event.startswith(
+                              ("os.exec", "os.posix_spawn")):
+        observed["effects"].append(event)
+        raise RuntimeError("bootstrap attempted an external side effect")
+sys.addaudithook(audit)
+sys.setprofile(profile)
+status = 0
+try:
+    if entry == "cli":
+        sys.argv = [str(source / "summ_cli.py"), "--doctor"]
+        runpy.run_path(sys.argv[0], run_name="__main__")
+    else:
+        __import__(entry)
+except SystemExit as exc:
+    status = exc.code
+except Exception as exc:
+    print(type(exc).__name__ + ": " + str(exc), file=sys.stderr)
+    status = 2
+finally:
+    sys.setprofile(None)
+    os._Environ.__getitem__ = original_getitem
+    print("CREDENTIAL_BOOTSTRAP_OBSERVATION=" + json.dumps(observed, sort_keys=True))
+sys.exit(status)
+"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(cls.temp.cleanup)
+        cls.root = pathlib.Path(cls.temp.name)
+        cls.source = cls.root / "src"
+        cls.source.mkdir()
+        # Copy only executable source and its small configuration files. The
+        # production catalog is changed on disk, without patching its reader.
+        for path in ENG.iterdir():
+            if path.is_file() and path.suffix in {".py", ".json"}:
+                shutil.copy2(path, cls.source / path.name)
+        cls.catalog = json.loads((ENG / "models.json").read_text())
+
+    def probe(self, location, name, entry="cli", *, runtime_file=False):
+        catalog = json.loads(json.dumps(self.catalog))
+        config = gateway_runtime()
+        gateway = config["gateways"]["localgw"]
+        if location == "catalog":
+            catalog["bootstrap_fixture"] = {
+                "_optional_credential_envs": {"unused_provider": name}}
+        elif location == "gateway":
+            gateway["api_key_env"] = name
+        else:
+            gateway["models"] = {"model-a": {"api_key_env": name}}
+        (self.source / "models.json").write_text(json.dumps(catalog))
+        runtime_path = self.root / "runtime.json"
+        runtime_path.write_text(json.dumps(config))
+        # No real credentials, user runtime, or provider controls are inherited.
+        env = {key: value for key, value in os.environ.items()
+               if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"}}
+        env.update({"HOME": str(self.root), "USERPROFILE": str(self.root),
+                    "LOCALAPPDATA": str(self.root), "PYTHONDONTWRITEBYTECODE": "1",
+                    "HARNESS": "opencode", "SUMM_RUNTIME_CONFIG": str(runtime_path)})
+        if not runtime_file:
+            env["SUMM_RUNTIME_JSON"] = json.dumps(config)
+        # Canonical spelling also tests case-insensitive policy on Unix hosts;
+        # Windows treats differently cased names as this same control variable.
+        env[name.upper()] = self.SECRET
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", self.CHILD, str(self.source), entry, name],
+            cwd=self.root, env=env, capture_output=True, text=True, timeout=20)
+        lines = result.stdout.splitlines()
+        receipt = next((line[len(self.MARKER):] for line in lines
+                        if line.startswith(self.MARKER)), None)
+        self.assertIsNotNone(receipt, result.stderr)
+        return result, json.loads(receipt)
+
+    def assert_rejected(self, location, name, entry="cli", *, runtime_file=False):
+        result, observed = self.probe(location, name, entry, runtime_file=runtime_file)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(2, result.returncode, diagnostic)
+        self.assertNotIn(self.SECRET, diagnostic)
+        self.assertRegex(result.stderr.lower(), r"credential.*conflict|conflict.*credential")
+        self.assertIn(name.upper(), result.stderr.upper())
+        self.assertEqual({"reads": [], "calls": [], "effects": []}, observed)
+
+    def test_doctor_rejects_catalog_and_runtime_credentials_before_control_reads(self):
+        for location in ("catalog", "gateway", "model"):
+            for name in ("HARNESS", "CALL_TIMEOUT"):
+                for runtime_file in (False, True):
+                    with self.subTest(location=location, name=name,
+                                      runtime_file=runtime_file):
+                        self.assert_rejected(location, name, runtime_file=runtime_file)
+
+    def test_direct_engine_import_cannot_consume_credentials_as_controls(self):
+        for location in ("catalog", "gateway", "model"):
+            for name in ("HARNESS", "CALL_TIMEOUT"):
+                with self.subTest(location=location, name=name):
+                    self.assert_rejected(location, name, "mapsum")
+
+    def test_import_time_limits_binaries_and_route_controls_are_reserved(self):
+        # Representative controls exercise integer/float parsing, binary
+        # resolution, role chains, options and progress initialization.
+        names = ("ARGV_SAFE_BYTES", "RETRIES", "WARM_BUDGET_S", "WARM_POLL_MAX_S",
+                 "AGY_BIN", "CLAUDE_BIN", "OPENCODE_BIN", "MUSE_BIN", "CODEX_BIN",
+                 "GROK_BIN", "CURSOR_BIN", "PLAN_MODEL", "OPENCODE_CHAIN_PLAN",
+                 "OPENCODE_VARIANT", "SUMM_ROLE_OPTIONS", "SUMM_PROGRESS")
+        for index, name in enumerate(names):
+            location = ("catalog", "gateway", "model")[index % 3]
+            with self.subTest(location=location, name=name):
+                self.assert_rejected(location, name)
+
+    def test_catalog_case_variants_cannot_bypass_bootstrap_validation(self):
+        for name in ("harness", "Harness", "call_timeout", "Call_Timeout",
+                     "retries", "Argv_Safe_Bytes", "Opencode_Bin"):
+            with self.subTest(name=name):
+                self.assert_rejected("catalog", name)
+
+    def test_ordinary_declared_credentials_do_not_disable_engine_import(self):
+        for location in ("catalog", "gateway", "model"):
+            with self.subTest(location=location):
+                result, observed = self.probe(location, "SUMM_BOOTSTRAP_TEST_KEY", "mapsum")
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertNotIn(self.SECRET, result.stdout + result.stderr)
+                self.assertEqual([], observed["reads"])
+                self.assertEqual([], observed["effects"])
+                self.assertIn("mapsum.py:_default_agy_binary", observed["calls"])
+
+
+class OpenCodeTransport(unittest.TestCase):
+    ms = load("mapsum")
+
+    @staticmethod
+    def ambient_env(td):
+        config = gateway_runtime()
+        config["gateways"]["localgw"]["models"] = {
+            "model-a": {"api_key_env": "SUMM_ROUTE_TOKEN"}}
+        return {
+            "SUMM_RUNTIME_JSON": json.dumps(config),
+            "SUMM_LOCALGW_TOKEN": "gateway-test-key",
+            "SUMM_ROUTE_TOKEN": "route-test-key",
+            "GITHUB_TOKEN": "unrelated-test-key",
+            "SUMM_TARGET_KEY": "private-target",
+            "SUMM_ROLE_OPTIONS": '{"plan":{"variant":"high"}}',
+            "SUMM_INSTRUCTIONS_FILE": "/tmp/private-instructions.md",
+            "SUMM_WRITING_PLAN_FILE": "/tmp/private-plan.json",
+            "SUMM_RECOVERY_FILE": "/tmp/private-recovery.json",
+            "SUMM_DEADLINE": "123456789",
+            "OPENCODE_SIMULATE": "1",
+            "OPENCODE_MODELS_PATH": "/tmp/poison-models.json",
+            "OPENCODE_MODELS_URL": "https://poison.example/models",
+            "OPENCODE_CLIENT": "poison-client",
+            "OPENCODE_CONFIG_CONTENT": "poison-config",
+            "OPENCODE_DB": "/tmp/poison.db",
+            "opencode_future_control": "poison-future",
+            "OPENAI_API_KEY": "unselected-test-key",
+            "SUMM_OTHER_PROVIDER_KEY": "other-test-key",
+            "NODE_OPTIONS": "--require=/tmp/poison.js",
+            "NODE_TLS_REJECT_UNAUTHORIZED": "0",
+            "LD_PRELOAD": "/tmp/poison.so",
+            "HOME": "/tmp/private-home", "USERPROFILE": "/tmp/private-home",
+            "APPDATA": "/tmp/private-appdata",
+            "XDG_DATA_HOME": str(pathlib.Path(td) / "saved-data"),
+            "PATH": "/tmp/ordinary-bin", "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8", "TZ": "UTC",
+            "HTTPS_PROXY": "https://proxy.example", "http_proxy": "http://proxy.example",
+            "NO_PROXY": "localhost", "SSL_CERT_FILE": "/tmp/ordinary-cert.pem",
+            "SSL_CERT_DIR": "/tmp/ordinary-certs",
+            "NODE_EXTRA_CA_CERTS": "/tmp/ordinary-extra-cert.pem",
+            "SystemRoot": "C:\\Windows", "WINDIR": "C:\\Windows",
+            "ComSpec": "C:\\Windows\\System32\\cmd.exe", "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+        }
+
+    def assert_private_env_absent(self, env):
+        controlled = {"OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB"}
+        for name in self.ambient_env("/tmp"):
+            if (name.startswith("SUMM_")
+                    or name.upper().startswith("OPENCODE_") and name not in controlled
+                    or name in {"GITHUB_TOKEN", "OPENAI_API_KEY", "NODE_OPTIONS",
+                                "NODE_TLS_REJECT_UNAUTHORIZED", "LD_PRELOAD", "APPDATA"}):
+                self.assertNotIn(name, env)
+
+    @staticmethod
+    def response(text='{"ok":true}', reason="stop", error=None):
+        events = [{"type": "step_start", "sessionID": "session-test", "part": {}},
+                  {"type": "text", "sessionID": "session-test",
+                   "part": {"text": text}},
+                  {"type": "step_finish", "sessionID": "session-test",
+                   "part": {"reason": reason, "cost": 0.01,
+                            "tokens": {"input": 7, "output": 3, "reasoning": 2,
+                                       "cache": {"read": 10, "write": 4}}}}]
+        if error:
+            events.append({"type": "error", "sessionID": "session-test",
+                           "error": {"message": error}})
+        return "\n".join(json.dumps(event) for event in events)
+
+    def test_current_cli_receives_variant_in_model_and_prompt_on_stdin(self):
+        with tempfile.TemporaryDirectory() as td:
+            wd = pathlib.Path(td).resolve()
+            prompt = "PAYLOAD" * 10_000
+            cmd = self.ms._cmd("opencode", "vendor/model", wd, prompt,
+                               {"variant": "high"})
+            self.assertIn("--standalone", cmd)
+            self.assertEqual("vendor/model#high", cmd[cmd.index("--model") + 1])
+            self.assertEqual("json", cmd[cmd.index("--format") + 1])
+            self.assertNotIn("--dir", cmd)
+            self.assertNotIn("--variant", cmd)
+            self.assertFalse(any(prompt in arg for arg in cmd))
+            self.assertEqual("stdin", self.ms.NON_ARGV_TRANSPORT["opencode"])
+            self.assertIn("opencode", self.ms.STDIN_HARNESSES)
+            self.assertEqual(wd / ".oc", self.ms.cli_cwd("opencode", wd))
+            cfg = json.loads((wd / ".oc" / "opencode.json").read_text())
+            agent = cfg["agents"][self.ms.LEAN_AGENT]
+            # A steps=1 cap injects an assistant prefill before the first call.
+            self.assertNotIn("steps", agent)
+            self.assertEqual([{"action": "*", "resource": "*", "effect": "deny"}],
+                             agent["permissions"])
+
+    def test_selected_key_is_memory_only_and_all_content_storage_is_in_run(self):
+        credential = [{"integrationID": "vendor", "active": True,
+                       "value": {"type": "key", "key": "test-only-secret"}}]
+        config = {"opencode": {"_credential_envs": {
+            "vendor": "SUMM_TEST_OPENCODE_KEY", "other": "OPENAI_API_KEY"}},
+                  "another": {"_optional_credential_envs": {
+                      "other": "SUMM_OTHER_PROVIDER_KEY"}}}
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                unittest.mock.patch.dict(os.environ, self.ambient_env(td), clear=True), \
+                unittest.mock.patch.object(subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(credential), "")) as process:
+            wd = pathlib.Path(td).resolve()
+            env = self.ms.opencode_env("vendor/model", wd)
+            self.assertEqual("test-only-secret", env["SUMM_TEST_OPENCODE_KEY"])
+            self.assertEqual([self.ms.OPENCODE, "auth", "export", "--standalone", "vendor"],
+                             process.call_args.args[0])
+            auth = process.call_args.kwargs["env"]
+            self.assertEqual(wd / ".oc", process.call_args.kwargs["cwd"])
+            self.assertEqual(str(wd / "saved-data"), auth["XDG_DATA_HOME"])
+            self.assertNotIn("OPENCODE_DB", auth)
+            self.assertNotIn("SUMM_TEST_OPENCODE_KEY", auth)
+            for child in (env, auth):
+                self.assert_private_env_absent(child)
+                for variable in ("OPENCODE_SIMULATE", "OPENCODE_MODELS_PATH",
+                                 "OPENCODE_MODELS_URL", "OPENCODE_CLIENT",
+                                 "OPENCODE_CONFIG_CONTENT", "opencode_future_control",
+                                 "OPENAI_API_KEY", "SUMM_OTHER_PROVIDER_KEY"):
+                    self.assertNotIn(variable, child)
+                self.assertEqual("1", child["OPENCODE_CONFIG_PROJECT_DISABLE"])
+                for variable in ("PWD", "HOME", "USERPROFILE", "XDG_CACHE_HOME",
+                                 "XDG_STATE_HOME", "XDG_CONFIG_HOME", "OPENCODE_CONFIG",
+                                 "OPENCODE_CONFIG_DIR", "TMPDIR", "TMP", "TEMP"):
+                    self.assertTrue(pathlib.Path(child[variable]).is_relative_to(wd))
+                for variable in ("PATH", "LANG", "LC_ALL", "TZ", "HTTPS_PROXY",
+                                 "http_proxy", "NO_PROXY", "SSL_CERT_FILE",
+                                 "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "SystemRoot",
+                                 "WINDIR", "ComSpec", "PATHEXT"):
+                    self.assertEqual(os.environ[variable], child[variable])
+            for variable in ("PWD", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+                             "XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR",
+                             "OPENCODE_DB", "TMPDIR", "TMP", "TEMP"):
+                self.assertTrue(pathlib.Path(env[variable]).is_relative_to(wd))
+            self.assertEqual("1", env["OPENCODE_CONFIG_PROJECT_DISABLE"])
+            for file in wd.rglob("*"):
+                if file.is_file():
+                    self.assertNotIn("test-only-secret", file.read_text())
+
+    def test_declared_credentials_override_allowed_os_names_on_both_key_paths(self):
+        config = {"opencode": {"_credential_envs": {
+            "vendor": "SUMM_TEST_OPENCODE_KEY"}},
+                  "another": {"_optional_credential_envs": {"other": "LANG"}}}
+        credential = [{"integrationID": "vendor", "active": True,
+                       "value": {"type": "key", "key": "selected-test-key"}}]
+        for supplied_key in (True, False):
+            with self.subTest(supplied_key=supplied_key), tempfile.TemporaryDirectory() as td:
+                parent = self.ambient_env(td)
+                snapshot = json.loads(parent["SUMM_RUNTIME_JSON"])
+                spec = snapshot["gateways"]["localgw"]
+                spec["api_key_env"] = "HTTPS_PROXY"
+                spec["models"]["model-a"]["api_key_env"] = "SSL_CERT_FILE"
+                parent["SUMM_RUNTIME_JSON"] = json.dumps(snapshot)
+                if supplied_key:
+                    parent["SUMM_TEST_OPENCODE_KEY"] = "selected-test-key"
+                children = []
+
+                def fake_run(argv, **kw):
+                    children.append(kw["env"])
+                    output = json.dumps(credential) if argv[1] == "auth" else self.response()
+                    return subprocess.CompletedProcess(argv, 0, output, "")
+
+                with unittest.mock.patch.dict(os.environ, parent, clear=True), \
+                        unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                        unittest.mock.patch.object(subprocess, "run", fake_run):
+                    self.ms.run("SOURCE BYTES", pathlib.Path(td),
+                                ["opencode:vendor/model"], "plan001", validate=json.loads)
+                self.assertEqual(1 if supplied_key else 2, len(children))
+                for child in children:
+                    self.assert_private_env_absent(child)
+                    for name in ("LANG", "HTTPS_PROXY", "SSL_CERT_FILE"):
+                        self.assertNotIn(name, child)
+                    self.assertEqual(parent["SystemRoot"], child["SystemRoot"])
+                if not supplied_key:
+                    self.assertNotIn("SUMM_TEST_OPENCODE_KEY", children[0])
+                    self.assertNotIn("OPENCODE_DB", children[0])
+                self.assertEqual("selected-test-key", children[-1]["SUMM_TEST_OPENCODE_KEY"])
+
+    def test_credential_storage_names_fail_closed(self):
+        for location in ("catalog", "gateway", "model"):
+            for name in ("XDG_DATA_HOME", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+                         "xdg_data_home", "Home", "HomePath"):
+                for supplied_key in (False, True):
+                    with self.subTest(location=location, name=name, supplied_key=supplied_key), \
+                            tempfile.TemporaryDirectory() as td:
+                        config = {"opencode": {"_credential_envs": {
+                            "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
+                        parent = self.ambient_env(td)
+                        if location == "catalog":
+                            config["another"] = {"_optional_credential_envs": {"other": name}}
+                        else:
+                            snapshot = json.loads(parent["SUMM_RUNTIME_JSON"])
+                            spec = snapshot["gateways"]["localgw"]
+                            spec = spec if location == "gateway" else spec["models"]["model-a"]
+                            spec["api_key_env"] = name.upper()
+                            parent["SUMM_RUNTIME_JSON"] = json.dumps(snapshot)
+                        parent[name] = "/tmp/collision-test-secret"
+                        if supplied_key:
+                            parent["SUMM_TEST_OPENCODE_KEY"] = "selected-test-key"
+                        with unittest.mock.patch.dict(os.environ, parent, clear=True), \
+                                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                                unittest.mock.patch.object(subprocess, "run") as process, \
+                                self.assertRaisesRegex(self.ms.Abort, "credential name conflicts"):
+                            self.ms.opencode_env("vendor/model", pathlib.Path(td))
+                        process.assert_not_called()
+                        self.assertFalse((pathlib.Path(td) / ".oc").exists())
+
+    def test_selected_credential_control_names_fail_closed(self):
+        names = ("XDG_DATA_HOME", "HOME", "USERPROFILE", "PATH", "HTTPS_PROXY",
+                 "PATHEXT", "SystemRoot", "WINDIR", "ComSpec", "LANG", "LC_ALL",
+                 "PWD", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+                 "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT",
+                 "OPENCODE_CONFIG_PROJECT_DISABLE", "OPENCODE_DB", "OPENCODE_VARIANT",
+                 "OPENCODE_MODELS_PATH", "OPENCODE_FUTURE_CONTROL", "TMPDIR", "TMP", "TEMP",
+                 "NODE_OPTIONS", "NODE_TLS_REJECT_UNAUTHORIZED", "BUN_OPTIONS", "LD_PRELOAD",
+                 "DYLD_INSERT_LIBRARIES", "SUMM_ROLE_OPTIONS", "SUMM_RUNTIME_JSON")
+        for base in names:
+            for name in (base, base.lower(), base.title()):
+                for supplied_key in (False, True):
+                    with self.subTest(name=name, supplied_key=supplied_key), \
+                            tempfile.TemporaryDirectory() as td:
+                        config = {"opencode": {"_credential_envs": {"vendor": name}}}
+                        parent = self.ambient_env(td)
+                        if supplied_key:
+                            parent[name] = "collision-test-secret"
+                        with unittest.mock.patch.dict(os.environ, parent, clear=True), \
+                                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                                unittest.mock.patch.object(subprocess, "run") as process, \
+                                self.assertRaisesRegex(self.ms.Abort, "credential name conflicts"):
+                            self.ms.opencode_env("vendor/model", pathlib.Path(td))
+                        process.assert_not_called()
+                        self.assertFalse((pathlib.Path(td) / ".oc").exists())
+
+    def test_backend_control_and_malformed_credentials_never_launch(self):
+        for location in ("catalog", "gateway", "model"):
+            for name in ("OPENCODE_VARIANT", "OPENCODE_BIN", "SUMM_ROLE_OPTIONS",
+                         "SUMM_TARGET_KEY", "SUMM_INSTRUCTIONS_FILE", "HARNESS",
+                         "SUMM_ACTIVE_ROLES", "SUMM_LOCAL_ONLY", "SUMM_LOCALGW_REQUEST_OPTIONS"):
+                with self.subTest(location=location, name=name), tempfile.TemporaryDirectory() as td:
+                    parent = self.ambient_env(td)
+                    config = {"opencode": {"_credential_envs": {
+                        "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
+                    if location == "catalog":
+                        config["another"] = {"_optional_credential_envs": {"other": name}}
+                    else:
+                        snapshot = json.loads(parent["SUMM_RUNTIME_JSON"])
+                        spec = snapshot["gateways"]["localgw"]
+                        spec = spec if location == "gateway" else spec["models"]["model-a"]
+                        spec["api_key_env"] = name
+                        parent["SUMM_RUNTIME_JSON"] = json.dumps(snapshot)
+                    with unittest.mock.patch.dict(os.environ, parent, clear=True), \
+                            unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                            unittest.mock.patch.object(subprocess, "run") as process, \
+                            self.assertRaisesRegex(self.ms.Abort, "credential name conflicts"):
+                        self.ms.opencode_env("vendor/model", pathlib.Path(td))
+                    process.assert_not_called()
+        for name in ("", " KEY", "KEY ", "KEY=VALUE", "KEY\x00VALUE", 12):
+            with self.subTest(invalid_name=name), tempfile.TemporaryDirectory() as td, \
+                    unittest.mock.patch.dict(os.environ, {}, clear=True), \
+                    unittest.mock.patch.object(self.ms, "_model_config", return_value={
+                        "opencode": {"_credential_envs": {"vendor": "SUMM_TEST_OPENCODE_KEY"}},
+                        "other": {"_credential_envs": {"vendor": name}}}), \
+                    unittest.mock.patch.object(subprocess, "run") as process, \
+                    self.assertRaisesRegex(self.ms.Abort, "invalid credential environment names"):
+                self.ms.opencode_env("vendor/model", pathlib.Path(td))
+            process.assert_not_called()
+
+    def test_credential_control_guard_precedes_progress_and_command(self):
+        for name in ("OPENCODE_VARIANT", "SUMM_ROLE_OPTIONS"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as td:
+                parent = self.ambient_env(td)
+                snapshot = json.loads(parent["SUMM_RUNTIME_JSON"])
+                snapshot["gateways"]["localgw"]["api_key_env"] = name
+                parent["SUMM_RUNTIME_JSON"] = json.dumps(snapshot)
+                config = {"opencode": {"_credential_envs": {
+                    "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
+                with unittest.mock.patch.dict(os.environ, parent, clear=True), \
+                        unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                        unittest.mock.patch.object(self.ms, "effective_option") as options, \
+                        unittest.mock.patch.object(self.ms, "_pg") as progress, \
+                        unittest.mock.patch.object(subprocess, "run") as process, \
+                        self.assertRaisesRegex((self.ms.Abort, self.ms.runtime.ConfigError),
+                                               "credential name conflicts") as rejected:
+                    self.ms.run("SOURCE BYTES", pathlib.Path(td),
+                                ["opencode:vendor/model"], "plan001", validate=json.loads)
+                self.assertIn(name, str(rejected.exception))
+                process.assert_not_called()
+                options.assert_not_called()
+                progress.assert_not_called()
+
+    def test_late_catalog_validation_errors_cannot_disappear_before_dispatch(self):
+        error = self.ms.runtime.ConfigError(
+            "credential name conflicts with process controls: CALL_TIMEOUT")
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms.model_config, "full", side_effect=error), \
+                unittest.mock.patch.object(self.ms.runtime, "config") as config, \
+                unittest.mock.patch.object(self.ms.subprocess, "run") as process, \
+                self.assertRaisesRegex(self.ms.Abort, "credential name conflicts.*CALL_TIMEOUT"):
+            self.ms.opencode_env("vendor/model", pathlib.Path(td))
+        config.assert_not_called()
+        process.assert_not_called()
+
+    def test_credential_discovery_resolves_the_real_home_before_isolating_it(self):
+        config = {"opencode": {"_credential_envs": {
+            "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
+        credential = [{"integrationID": "vendor", "active": True,
+                       "value": {"type": "key", "key": "test-only-secret"}}]
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.dict(os.environ, {}, clear=True), \
+                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                unittest.mock.patch.object(pathlib.Path, "home",
+                    return_value=pathlib.Path(td) / "real-home"), \
+                unittest.mock.patch.object(subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(credential), "")) as process:
+            wd = pathlib.Path(td).resolve()
+            env = self.ms.opencode_env("vendor/model", wd)
+            auth = process.call_args.kwargs["env"]
+            self.assertEqual(str(wd / "real-home" / ".local" / "share"),
+                             auth["XDG_DATA_HOME"])
+            self.assertEqual(str(wd / ".oc" / "home"), auth["HOME"])
+            self.assertEqual(auth["HOME"], auth["USERPROFILE"])
+            self.assertEqual(str(wd / ".oc" / "data"), env["XDG_DATA_HOME"])
+
+    def test_oauth_is_explicitly_rejected_before_isolated_dispatch(self):
+        config = {"opencode": {"_credential_envs": {
+            "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
+        credential = [{"integrationID": "vendor", "active": True,
+                       "value": {"type": "oauth", "access": "test-only-access"}}]
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                unittest.mock.patch.dict(os.environ, {}, clear=True), \
+                unittest.mock.patch.object(pathlib.Path, "home",
+                    return_value=pathlib.Path(td) / "saved-home"), \
+                unittest.mock.patch.object(subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(credential), "")), \
+                self.assertRaisesRegex(self.ms.Abort, "API key.*OAuth"):
+            self.ms.opencode_env("vendor/model", pathlib.Path(td))
+
+    def test_credential_timeout_cannot_copy_partial_secrets_into_call_evidence(self):
+        config = {"opencode": {"_credential_envs": {
+            "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
+        error = subprocess.TimeoutExpired(
+            ["opencode", "auth", "export"], 60,
+            output='{"key":"test-only-secret"}', stderr="test-only-secret")
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                unittest.mock.patch.dict(os.environ, {}, clear=True), \
+                unittest.mock.patch.object(pathlib.Path, "home",
+                    return_value=pathlib.Path(td) / "saved-home"), \
+                unittest.mock.patch.object(subprocess, "run", side_effect=error) as process:
+            wd = pathlib.Path(td)
+            with self.assertRaisesRegex(self.ms.Abort, "credential export did not complete"):
+                self.ms.run("p", wd, ["opencode:vendor/model"], "plan001")
+            process.assert_called_once()
+            for file in wd.rglob("*"):
+                if file.is_file():
+                    self.assertNotIn("test-only-secret", file.read_text())
+
+    def test_missing_finish_is_reconciled_from_the_exact_completed_native_turn(self):
+        text = '{"ok":true}'
+        raw = json.dumps({"type": "text", "sessionID": "session-test",
+                          "part": {"text": text}})
+        finish = json.loads(self.response().splitlines()[-1])["part"]
+        message = {"type": "assistant", "id": "message-test",
+                   "model": {"providerID": "vendor", "id": "model", "variant": "high"},
+                   "content": [{"type": "text", "text": text}],
+                   "time": {"completed": 123}, "finish": "stop",
+                   "tokens": finish["tokens"], "cost": finish["cost"]}
+        exported = {"info": {"id": "session-test"}, "messages": [message]}
+        seen = []
+
+        def fake_run(argv, **kw):
+            seen.append(argv)
+            output = json.dumps(exported) if "export" in argv else raw
+            return subprocess.CompletedProcess(argv, 0, output, "")
+
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms, "opencode_env", return_value={}), \
+                unittest.mock.patch.object(self.ms, "_opencode_policy", return_value=()), \
+                unittest.mock.patch.object(self.ms, "effective_option", return_value={"variant": "high"}), \
+                unittest.mock.patch.object(subprocess, "run", fake_run):
+            wd = pathlib.Path(td)
+            self.assertEqual(text, self.ms.run(
+                "p", wd, ["opencode:vendor/model"], "plan001", validate=json.loads))
+            self.assertEqual(2, len(seen))
+            self.assertEqual("run", seen[0][1])
+            self.assertEqual(["session", "export", "--standalone", "session-test"],
+                             seen[1][1:])
+            record = json.loads((wd / "calls.jsonl").read_text())
+            self.assertEqual("session_export", record["completion_source"])
+            self.assertEqual(26, record["usage"]["total_tokens"])
+            evidence = json.loads(next(wd.glob("*.response.json")).read_text())
+            self.assertEqual("message-test", evidence["completion"]["message_id"])
+            self.assertNotIn("content", evidence)
+            for field, value in (("finish", None), ("error", {"message": "failed"}),
+                                 ("content", [{"type": "text", "text": "different"}]),
+                                 ("model", {"providerID": "other", "id": "model"})):
+                broken = dict(message, **{field: value})
+                with unittest.mock.patch.object(subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, json.dumps(
+                        {"info": {"id": "session-test"}, "messages": [broken]}), "")):
+                    if field == "finish":
+                        # An absent native finish stays unusable in run().
+                        self.assertIsNone(self.ms.opencode_completion(
+                            {"response_id": "session-test", "content": text},
+                            "vendor/model", "high", {}, wd)["reason"])
+                    else:
+                        with self.assertRaises(ValueError):
+                            self.ms.opencode_completion(
+                                {"response_id": "session-test", "content": text},
+                                "vendor/model", "high", {}, wd)
+
+    def test_production_run_unwraps_events_and_retains_cache_and_cost_accounting(self):
+        seen = {}
+        raw = self.response()
+
+        def fake_run(argv, **kw):
+            seen.update(kw)
+            return subprocess.CompletedProcess(argv, 0, raw, "")
+
+        config = {"opencode": {"_credential_envs": {
+            "vendor": "SUMM_TEST_OPENCODE_KEY", "other": "OPENAI_API_KEY"}}}
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.dict(os.environ, {
+                    **self.ambient_env(td), "SUMM_TEST_OPENCODE_KEY": "selected-test-key"},
+                    clear=True), \
+                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                unittest.mock.patch.object(subprocess, "run", fake_run):
+            wd = pathlib.Path(td).resolve()
+            result = self.ms.run("SOURCE BYTES", wd, ["opencode:vendor/model"],
+                                 "plan001", validate=json.loads)
+            self.assertEqual('{"ok":true}', result)
+            self.assertTrue(seen["input"].startswith("SOURCE BYTES"))
+            self.assertEqual(wd / ".oc", seen["cwd"])
+            env = seen["env"]
+            self.assertEqual("selected-test-key", env["SUMM_TEST_OPENCODE_KEY"])
+            self.assert_private_env_absent(env)
+            for variable in ("PATH", "LANG", "HTTPS_PROXY", "http_proxy",
+                             "SSL_CERT_FILE", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT"):
+                self.assertEqual(os.environ[variable], env[variable])
+            for variable in ("PWD", "HOME", "USERPROFILE", "XDG_DATA_HOME",
+                             "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
+                             "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB",
+                             "TMPDIR", "TMP", "TEMP"):
+                self.assertTrue(pathlib.Path(env[variable]).is_relative_to(wd))
+            self.assertEqual("1", env["OPENCODE_CONFIG_PROJECT_DISABLE"])
+            rec = json.loads((wd / "calls.jsonl").read_text())
+            self.assertEqual("stop", rec["finish_reason"])
+            self.assertEqual("session-test", rec["response_id"])
+            self.assertEqual(0.01, rec["cost_usd"])
+            self.assertEqual({"prompt_tokens": 21, "completion_tokens": 5,
+                              "reasoning_tokens": 2, "cache_read_input_tokens": 10,
+                              "cache_creation_input_tokens": 4, "total_tokens": 26},
+                             rec["usage"])
+            self.assertEqual(raw, (wd / "plan001.stdout.txt").read_text())
+
+    def test_incomplete_or_failed_transport_never_records_success(self):
+        for raw, returncode in (
+                ('{"type":"text","part":{"text":"{}"}}', 0),
+                (self.response('{"ok":', "length"), 0),
+                (self.response(error="provider failed"), 0),
+                (self.response(), 1),
+                ('{"ok":true}', 0)):
+            with tempfile.TemporaryDirectory() as td, \
+                    unittest.mock.patch.object(self.ms, "opencode_env", return_value={}), \
+                unittest.mock.patch.object(self.ms, "_opencode_policy", return_value=()), \
+                    unittest.mock.patch.object(subprocess, "run", return_value=
+                        subprocess.CompletedProcess([], returncode, raw, "")), \
+                    self.assertRaises(self.ms.NoCandidate):
+                self.ms.run("p", pathlib.Path(td), ["opencode:vendor/model"],
+                            "plan001", validate=json.loads)
+            # The call raises; its raw transport is never returned as stage JSON.
+
+    def test_complete_valid_json_at_output_limit_is_kept(self):
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms, "opencode_env", return_value={}), \
+                unittest.mock.patch.object(self.ms, "_opencode_policy", return_value=()), \
+                unittest.mock.patch.object(subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, self.response(reason="length"), "")):
+            self.assertEqual('{"ok":true}', self.ms.run(
+                "p", pathlib.Path(td), ["opencode:vendor/model"], "plan001",
+                validate=json.loads))
+
+    def test_suspension_while_waiting_or_backing_off_prevents_the_next_dispatch(self):
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms.runtime, "resource_lease",
+                                           return_value=contextlib.nullcontext(0)), \
+                unittest.mock.patch.object(self.ms.model_config, "require_enabled",
+                    side_effect=[None, self.ms.runtime.ConfigError("backend disabled")]), \
+                unittest.mock.patch.object(self.ms, "opencode_env", return_value={}), \
+                unittest.mock.patch.object(self.ms, "_opencode_policy", return_value=()), \
+                unittest.mock.patch.object(subprocess, "run") as process:
+            with self.assertRaisesRegex(self.ms.Abort, "disabled"):
+                self.ms.run("p", pathlib.Path(td), ["opencode:vendor/model"], "plan001")
+            process.assert_not_called()
+        suspended = [False]
+
+        def enabled(_harness):
+            if suspended[0]:
+                raise self.ms.runtime.ConfigError("backend disabled")
+
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms.runtime, "resource_lease",
+                                           return_value=contextlib.nullcontext(0)), \
+                unittest.mock.patch.object(self.ms.model_config, "require_enabled", side_effect=enabled), \
+                unittest.mock.patch.object(self.ms.time, "sleep",
+                                           side_effect=lambda _seconds: suspended.__setitem__(0, True)), \
+                unittest.mock.patch.object(self.ms, "opencode_env", return_value={}), \
+                unittest.mock.patch.object(self.ms, "_opencode_policy", return_value=()), \
+                unittest.mock.patch.object(subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 1, "", "connection reset by peer")) as process:
+            with self.assertRaisesRegex(self.ms.Abort, "disabled"):
+                self.ms.run("p", pathlib.Path(td), ["opencode:vendor/model"], "plan001")
+            process.assert_called_once()
+
 
 class CursorIsWiredLikeEveryOtherHarness(unittest.TestCase):
     """Cursor Agent CLI is another argv/stdin harness; the pipeline stays
@@ -11501,18 +12344,18 @@ class CursorIsWiredLikeEveryOtherHarness(unittest.TestCase):
 
     def test_cursor_grok_effort_is_a_model_id_variant(self):
         cfg = json.loads((ENG / "models.json").read_text())["cursor"]
-        setting = cfg["_model_settings"]["cursor-grok-4.6"]
+        setting = cfg["_model_settings"]["grok-4.7"]
         self.assertEqual("model", setting["option"])
         self.assertEqual(("low", "medium", "high", "xhigh"),
-                         self.ms.effort_values("cursor", "cursor-grok-4.6"))
+                         self.ms.effort_values("cursor", "grok-4.7"))
         self.assertEqual(
-            "cursor-grok-4.6-medium",
+            "grok-4.7-medium",
             load("model_config").resolved_model(
-                "cursor", "cursor-grok-4.6", "medium"))
+                "cursor", "grok-4.7", "medium"))
         self.assertEqual(
-            "cursor-grok-4.6-xhigh",
+            "grok-4.7-xhigh",
             load("model_config").resolved_model(
-                "cursor", "cursor-grok-4.6", "xhigh"))
+                "cursor", "grok-4.7", "xhigh"))
         self.assertTrue(all("fast" not in v for v in setting["variants"].values()))
 
     def test_a_failed_or_empty_envelope_is_never_an_answer(self):
@@ -13295,6 +14138,49 @@ class WriterRecoveryContract(unittest.TestCase):
             self.assertTrue((out / "brief.md").exists())
             report = json.loads((out / "full-report.json").read_text())
             self.assertEqual(report["status"], "open_findings")
+
+
+class SuspendedBackendsCannotSpend(unittest.TestCase):
+    def setUp(self):
+        self.ms = load("mapsum")
+        self.mc = self.ms.model_config
+        self.config = self.mc.roster()
+        self.disabled = next(h for h, spec in self.config.items()
+                             if spec.get("_enabled") is False)
+        self.model = self.config[self.disabled]["write"][0]
+        self.enabled = self.mc.default_harness()
+
+    def test_disabled_routes_keep_their_qualified_identity(self):
+        self.assertEqual((self.disabled, self.model), self.mc.split_entry(
+            f"{self.disabled}:{self.model}", self.enabled))
+        self.assertNotIn(self.disabled, load("summ_ui").roster())
+
+    def test_explicit_and_qualified_disabled_chains_fail_before_work(self):
+        for base, env in (
+                (self.disabled, {}),
+                (self.enabled, {f"{self.enabled.upper()}_CHAIN_WRITE":
+                                f"{self.disabled}:{self.model}"}),
+                (self.enabled, {"MODEL": f"{self.disabled}:{self.model}"})):
+            with self.subTest(base=base, env=env):
+                with self.assertRaisesRegex(self.mc.runtime.ConfigError, "disabled"):
+                    self.mc.role_chains(base, ("write",), environ=env)
+
+    def test_direct_dispatch_cannot_bypass_disabled_policy(self):
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms.subprocess, "run") as dispatch:
+            with self.assertRaisesRegex(self.ms.Abort, "disabled"):
+                self.ms.run("prompt", pathlib.Path(td),
+                            [f"{self.disabled}:{self.model}"], "write001")
+            dispatch.assert_not_called()
+
+    def test_enable_flag_rejects_malformed_values_and_can_be_reversed(self):
+        for value in ("false", 0, None):
+            config = {self.disabled: {"_enabled": value}}
+            with self.subTest(value=value), self.assertRaises(
+                    self.mc.runtime.ConfigError):
+                self.mc.require_enabled(self.disabled, config)
+        config = {self.disabled: {**self.config[self.disabled], "_enabled": True}}
+        self.mc.require_enabled(self.disabled, config)
 
 
 def _isolated_main() -> int:

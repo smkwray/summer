@@ -48,7 +48,10 @@ fi
 # python-tk, so a python3 without it must not be selected silently.
 for py in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
   if [ -x "$py" ] && "$py" -c 'import tkinter' >/dev/null 2>&1; then
-    exec "$py" "$UI"
+    # Give Python its own PID: replacing this registered bundle launcher
+    # prevented Rectangle from discovering the GUI's windows.
+    "$py" "$UI" &
+    exit 0
   fi
 done
 osascript -e 'display alert "summ'"'"'er" message "No python3 with tkinter was found. Try: brew install python-tk@3.14"'

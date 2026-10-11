@@ -145,6 +145,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("work_dir", nargs="?", default=None, help="temporary work directory")
     args = ap.parse_args(argv)
 
+    try:
+        ms = _runner()  # Bootstrap validates before any work-directory effects.
+    except Exception as exc:
+        print(f"speechprep configuration failed: {exc}", file=sys.stderr)
+        return 2
     src = pathlib.Path(args.source)
     dst = pathlib.Path(args.destination)
     work = (pathlib.Path(args.work_dir) if args.work_dir
@@ -158,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        result = convert_text(text, work)
+        result = convert_text(text, work, runner=ms)
     except Exception as exc:
         print(f"speechprep failed: {exc}", file=sys.stderr)
         return 1

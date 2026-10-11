@@ -1,25 +1,34 @@
 {
   "_defaults": {
     "profile": {
-      "name": "balanced",
+      "name": "Opus Plan",
       "plan": [
-        "claude",
-        "sonnet"
+        "opencode",
+        "anthropic/claude-opus-5-5",
+        "high"
       ],
       "write": [
-        "grok",
-        "grok-4.6"
+        "opencode",
+        "anthropic/claude-sonnet-5-5",
+        "high"
       ],
       "audit": [
-        "claude",
-        "sonnet"
+        "opencode",
+        "anthropic/claude-sonnet-5-5",
+        "high"
       ],
       "repair": [
-        "grok",
-        "grok-4.6"
+        "opencode",
+        "anthropic/claude-sonnet-5-5",
+        "high"
       ]
     },
     "fallback": [
+      {
+        "harness": "codex",
+        "model": "gpt-6-luna",
+        "effort": "high"
+      },
       {
         "harness": "codex",
         "model": "gpt-5.6-luna",
@@ -32,7 +41,7 @@
       },
       {
         "harness": "claude",
-        "model": "sonnet",
+        "model": "claude-sonnet-5-5",
         "effort": "high"
       }
     ]
@@ -90,7 +99,7 @@
   },
   "claude": {
     "_model_settings": {
-      "sonnet": {
+      "claude-sonnet-5-5": {
         "option": "effort",
         "values": [
           "low",
@@ -114,22 +123,26 @@
       }
     },
     "plan": [
-      "sonnet",
+      "claude-sonnet-5-5",
       "opus"
     ],
     "write": [
       "opus",
-      "sonnet"
+      "claude-sonnet-5-5"
     ],
     "audit": [
-      "sonnet"
+      "claude-sonnet-5-5"
     ],
     "repair": [
       "opus",
-      "sonnet"
+      "claude-sonnet-5-5"
     ]
   },
   "opencode": {
+    "_credential_envs": {
+      "anthropic": "ANTHROPIC_API_KEY",
+      "openai": "OPENAI_API_KEY"
+    },
     "_model_settings": {
       "openai/gpt-5.3-codex-spark": {
         "option": "variant",
@@ -153,21 +166,48 @@
           "max"
         ],
         "default": "high"
+      },
+      "anthropic/claude-sonnet-5-5": {
+        "option": "variant",
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high"
+      },
+      "anthropic/claude-opus-5-5": {
+        "option": "variant",
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high"
       }
     },
     "plan": [
+      "anthropic/claude-sonnet-5-5",
+      "anthropic/claude-opus-5-5",
       "openai/gpt-5.3-codex-spark",
       "openai/gpt-5.6-luna"
     ],
     "write": [
+      "anthropic/claude-sonnet-5-5",
       "openai/gpt-5.3-codex-spark",
       "openai/gpt-5.6-luna"
     ],
     "audit": [
+      "anthropic/claude-sonnet-5-5",
       "openai/gpt-5.3-codex-spark",
       "openai/gpt-5.6-luna"
     ],
     "repair": [
+      "anthropic/claude-sonnet-5-5",
       "openai/gpt-5.3-codex-spark",
       "openai/gpt-5.6-luna"
     ]
@@ -199,10 +239,23 @@
     ],
     "repair": [
       "muse-spark-1.3-contributor"
-    ]
+    ],
+    "_enabled": false
   },
   "codex": {
     "_model_settings": {
+      "gpt-6-luna": {
+        "option": "effort",
+        "values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high"
+      },
       "gpt-5.6-luna": {
         "option": "effort",
         "values": [
@@ -228,25 +281,29 @@
       }
     },
     "plan": [
+      "gpt-6-luna",
       "gpt-5.6-luna",
       "gpt-5.3-codex-spark"
     ],
     "write": [
+      "gpt-6-luna",
       "gpt-5.6-luna",
       "gpt-5.3-codex-spark"
     ],
     "audit": [
+      "gpt-6-luna",
       "gpt-5.6-luna",
       "gpt-5.3-codex-spark"
     ],
     "repair": [
+      "gpt-6-luna",
       "gpt-5.6-luna",
       "gpt-5.3-codex-spark"
     ]
   },
   "grok": {
     "_model_settings": {
-      "grok-4.6": {
+      "grok-4.7": {
         "option": "effort",
         "values": [
           "low",
@@ -267,25 +324,25 @@
       }
     },
     "plan": [
-      "grok-4.6",
+      "grok-4.7",
       "grok-4.5"
     ],
     "write": [
-      "grok-4.6",
+      "grok-4.7",
       "grok-4.5"
     ],
     "audit": [
-      "grok-4.6",
+      "grok-4.7",
       "grok-4.5"
     ],
     "repair": [
-      "grok-4.6",
+      "grok-4.7",
       "grok-4.5"
     ]
   },
   "cursor": {
     "_model_settings": {
-      "cursor-grok-4.6": {
+      "grok-4.7": {
         "option": "model",
         "default": "medium",
         "values": [
@@ -295,31 +352,31 @@
           "xhigh"
         ],
         "variants": {
-          "low": "cursor-grok-4.6-low",
-          "medium": "cursor-grok-4.6-medium",
-          "high": "cursor-grok-4.6-high",
-          "xhigh": "cursor-grok-4.6-xhigh"
+          "low": "grok-4.7-low",
+          "medium": "grok-4.7-medium",
+          "high": "grok-4.7-high",
+          "xhigh": "grok-4.7-xhigh"
         }
       }
     },
     "plan": [
       "auto",
-      "cursor-grok-4.6",
+      "grok-4.7",
       "composer-2.5"
     ],
     "write": [
       "auto",
-      "cursor-grok-4.6",
+      "grok-4.7",
       "composer-2.5"
     ],
     "audit": [
       "auto",
-      "cursor-grok-4.6",
+      "grok-4.7",
       "composer-2.5"
     ],
     "repair": [
       "auto",
-      "cursor-grok-4.6",
+      "grok-4.7",
       "composer-2.5"
     ]
   }

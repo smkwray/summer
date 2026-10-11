@@ -6,14 +6,15 @@ import hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, pathlib
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE))
 import runtime
-import gateway
 import model_config
+model_config.validate_environment()
+import gateway
 import mode_config
 import route_caps
 import json_contract
 # Harness: which CLI actually runs the prompts. The pipeline logic is identical;
 # only invocation and model names differ, so a new harness is a few lines here.
-HARNESS = os.environ.get("HARNESS", "agy")
+HARNESS = os.environ.get("HARNESS", model_config.default_harness())
 
 
 def _default_agy_binary():
@@ -36,12 +37,12 @@ GATEWAY_HARNESSES = model_config.gateway_harnesses()
 BIN.update({name: None for name in sorted(GATEWAY_HARNESSES)})
 HARNESSES = tuple(BIN)
 # Harnesses that take the prompt on stdin rather than as an argument.
-STDIN_HARNESSES = {"codex", "cursor"}
+STDIN_HARNESSES = {"codex", "cursor", "opencode"}
 # How each harness receives the composed prompt. Windows caps a whole command
 # line at 32,767 characters, so a route that can only take the prompt on argv
 # is ineligible for a payload near that: it is skipped like any other route
 # that cannot serve the call, rather than failing mid-run on one platform.
-NON_ARGV_TRANSPORT = {"codex": "stdin", "cursor": "stdin",
+NON_ARGV_TRANSPORT = {"codex": "stdin", "cursor": "stdin", "opencode": "stdin",
                       "grok": "file", "muse": "file"}
 ARGV_SAFE_BYTES = int(os.environ.get("ARGV_SAFE_BYTES", "24000"))
 VALID_ROLES = frozenset(mode_config.ROLES)
@@ -66,10 +67,7 @@ OPTIONS = {
 
 
 def _model_config() -> dict:
-    try:
-        return model_config.full()
-    except Exception:
-        return {}
+    return model_config.full()
 
 
 def model_setting(harness: str, model: str = "") -> dict:
@@ -218,21 +216,17 @@ def run_root(workdir: pathlib.Path) -> pathlib.Path:
 
 
 # opencode's default coding agent carries unrelated instructions and tool
-# schemas. A lean agent preserves capacity for the document transformation;
-# nothing here needs a tool because the source travels inline and the answer is
-# JSON. Config must sit in --dir because OPENCODE_CONFIG is not honoured by
-# `run`.
+# schemas. A lean agent preserves capacity for the document transformation.
+# The current CLI reads the composed prompt on stdin; all tools are denied.
 LEAN_AGENT = "lean"
 LEAN_CONFIG = {
     "$schema": "https://opencode.ai/config.json",
-    "agent": {LEAN_AGENT: {
+    "agents": {LEAN_AGENT: {
         "description": "One-shot transform. No tools, no files.",
         "mode": "primary",
-        "prompt": "You transform the text in the user's message and return the "
+        "system": "You transform the text in the user's message and return the "
                   "result. Nothing else.",
-        "tools": {t: False for t in (
-            "bash", "edit", "write", "read", "grep", "glob", "list",
-            "patch", "todowrite", "todoread", "webfetch", "task")},
+        "permissions": [{"action": "*", "resource": "*", "effect": "deny"}],
     }},
 }
 
@@ -286,10 +280,12 @@ def cursor_workspace(workdir: pathlib.Path) -> pathlib.Path:
 
 
 def cli_cwd(harness: str, workdir: pathlib.Path) -> pathlib.Path:
-    """Process cwd for one harness call; Cursor must not cwd into the run root."""
+    """Process cwd for a CLI, with coding agents in a harness-owned workspace."""
     workdir = pathlib.Path(workdir).resolve()
     if harness == "cursor":
         return cursor_workspace(workdir)
+    if harness == "opencode":
+        return _lean_dir(workdir)
     return workdir
 
 
@@ -358,10 +354,217 @@ def cursor_payload(stdout: str) -> str:
 
 
 def _lean_dir(workdir: pathlib.Path) -> pathlib.Path:
-    d = run_root(workdir) / ".oc"
+    d = run_root(workdir).resolve() / ".oc"
     d.mkdir(parents=True, exist_ok=True)
     (d / "opencode.json").write_text(json.dumps(LEAN_CONFIG, indent=2))
     return d
+
+
+def _opencode_policy(model: str, workdir: pathlib.Path):
+    """Validate names before credential lookup, options, evidence or dispatch."""
+    try:
+        config = _model_config()
+        # Catalog declarations must be checked before a frozen-runtime variable
+        # is read. Keep this order even for callers supplying a catalog directly.
+        credentials = runtime.credential_envs(catalog=config)
+        credentials |= runtime.credential_envs(runtime_config=runtime.config())
+    except runtime.ConfigError as exc:
+        raise Abort(str(exc)) from None
+    provider = model.split("/", 1)[0]
+    variable = ((config.get("opencode") or {}).get(
+        "_credential_envs") or {}).get(provider)
+    if not isinstance(variable, str) or not variable:
+        raise Abort(f"OpenCode {provider}: no API-key environment declared for "
+                    "isolated run storage")
+    inherited = {
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
+        "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_COLLATE",
+        "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME", "TZ",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+        "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+    }
+    d = run_root(workdir).resolve() / ".oc"
+    directories = {"XDG_DATA_HOME": d / "data", "XDG_CACHE_HOME": d / "cache",
+                   "XDG_STATE_HOME": d / "state", "XDG_CONFIG_HOME": d / "config",
+                   "HOME": d / "home", "USERPROFILE": d / "home",
+                   "TMPDIR": d / "tmp", "TMP": d / "tmp", "TEMP": d / "tmp"}
+    controlled = {name: str(path) for name, path in directories.items()}
+    controlled.update(PWD=str(d), OPENCODE_CONFIG_DIR=str(d),
+                      OPENCODE_CONFIG=str(d / "opencode.json"),
+                      OPENCODE_CONFIG_PROJECT_DISABLE="1",
+                      OPENCODE_DB=str(d / "data" / "opencode" / "opencode.db"))
+    if (variable.upper() in inherited | controlled.keys()
+            or variable.upper().startswith(("XDG_", "NODE_", "BUN_", "DYLD_", "LD_"))):
+        raise Abort("OpenCode selected credential name conflicts with child-process controls")
+    return variable, credentials, inherited, controlled, directories
+
+
+def opencode_env(model: str, workdir: pathlib.Path) -> dict:
+    """Isolate sessions under this run; use the selected API key only in memory.
+
+    OpenCode stores credentials and transcripts in one database. Export only
+    this provider's selected credential through its supported CLI, then pass
+    the key as an environment variable to an otherwise empty private store.
+    Only ordinary launch, locale, proxy and certificate settings are inherited;
+    private Summer state and unrelated secrets never reach either subprocess.
+    Neither the exported credentials nor this environment is retained.
+    """
+    variable, credentials, inherited, controlled, directories = _opencode_policy(model, workdir)
+    provider = model.split("/", 1)[0]
+    key = os.environ.get(variable)
+    # Resolve the user's database root before replacing home. OpenCode uses
+    # this XDG default on both platforms; no inherited database override applies.
+    if not key:
+        credential_data = pathlib.Path(
+            os.environ.get("XDG_DATA_HOME")
+            or pathlib.Path.home() / ".local" / "share").resolve()
+    env = {name: value for name, value in os.environ.items()
+           if name.upper() in inherited and name.upper() not in credentials}
+    d = _lean_dir(workdir)
+    for path in set(directories.values()):
+        path.mkdir(exist_ok=True)
+    env.update(controlled)
+    if not key:
+        # Only credential discovery can access the user's real data root.
+        # Config, compatibility directories and cwd remain run-local.
+        auth_env = dict(env, XDG_DATA_HOME=str(credential_data))
+        auth_env.pop("OPENCODE_DB")
+        try:
+            result = subprocess.run(
+                [OPENCODE, "auth", "export", "--standalone", provider],
+                cwd=d, env=auth_env,
+                capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                timeout=60)
+        except (subprocess.TimeoutExpired, OSError):
+            # A partial credential export can contain a key. Never let that
+            # exception reach the provider-call evidence recorder below.
+            raise Abort(f"OpenCode {provider}: credential export did not "
+                        "complete") from None
+        if result.returncode:
+            raise Abort(f"OpenCode {provider}: could not resolve its saved "
+                        "API credential")
+        try:
+            entries = json.loads(result.stdout)
+            selected = [entry for entry in entries
+                        if isinstance(entry, dict)
+                        and entry.get("integrationID") == provider
+                        and entry.get("active") is True]
+            value = selected[0]["value"] if len(selected) == 1 else {}
+        except (TypeError, ValueError, KeyError):
+            raise Abort(f"OpenCode {provider}: invalid credential export") from None
+        if value.get("type") != "key" or not value.get("key"):
+            raise Abort(f"OpenCode {provider}: isolated runs require an API key; "
+                        "the selected saved credential is absent or uses OAuth")
+        key = value["key"]
+    env[variable] = key
+    return env
+
+
+def opencode_completion(response: dict, model: str, variant: str | None,
+                        env: dict, workdir: pathlib.Path) -> dict:
+    """Recover authoritative completion when the CLI omits step_finish."""
+    session = response.get("response_id")
+    if not session:
+        raise ValueError("OpenCode omitted its session ID")
+    try:
+        result = subprocess.run(
+            [OPENCODE, "session", "export", "--standalone", session],
+            cwd=cli_cwd("opencode", workdir), env=env, capture_output=True,
+            text=True, stdin=subprocess.DEVNULL, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        raise ValueError("OpenCode completion export did not complete") from None
+    if result.returncode:
+        raise ValueError("OpenCode completion export failed")
+    export = json.loads(result.stdout)
+    if not isinstance(export, dict) or (export.get("info") or {}).get("id") != session:
+        raise ValueError("OpenCode completion session differs")
+    assistants = [m for m in export.get("messages", [])
+                  if isinstance(m, dict) and m.get("type") == "assistant"]
+    if len(assistants) != 1:
+        raise ValueError("OpenCode did not retain exactly one assistant turn")
+    message = assistants[0]
+    provider, model_id = model.split("/", 1)
+    selected = message.get("model") or {}
+    if (selected.get("providerID") != provider or selected.get("id") != model_id
+            or (variant and selected.get("variant") != variant)):
+        raise ValueError("OpenCode completed on a different model or variant")
+    if message.get("error") or not (message.get("time") or {}).get("completed"):
+        raise ValueError("OpenCode assistant did not complete successfully")
+    content = message.get("content") or []
+    if any(part.get("type") not in {"text", "reasoning"} for part in content):
+        raise ValueError("OpenCode retained tool use in its transformation")
+    text = "".join(part["text"] for part in content if part.get("type") == "text")
+    if text != response["content"]:
+        raise ValueError("OpenCode emitted text differs from its completed turn")
+    return {"reason": message.get("finish"), "tokens": message.get("tokens"),
+            "cost": message.get("cost"), "message_id": message.get("id"),
+            "completed": message["time"]["completed"], "model": selected}
+
+
+def opencode_response(stdout: str, completion: dict | None = None) -> dict:
+    """Unwrap the JSONL transport and preserve native completion/accounting."""
+    content, finishes, errors = [], [], []
+    session = None
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            raise ValueError("OpenCode returned a malformed event")
+        current = event.get("sessionID")
+        if current:
+            if session and current != session:
+                raise ValueError("OpenCode returned multiple sessions")
+            session = current
+        part = event.get("part") or {}
+        if event["type"] == "text":
+            text = part.get("text")
+            if not isinstance(text, str):
+                raise ValueError("OpenCode returned malformed text")
+            content.append(text)
+        elif event["type"] == "step_finish":
+            if not isinstance(part, dict):
+                raise ValueError("OpenCode returned a malformed completion")
+            finishes.append(part)
+        elif event["type"] == "error":
+            error = event.get("error") or {}
+            errors.append(str(error.get("message") or "OpenCode execution failed"))
+        elif event["type"] == "tool_use":
+            raise ValueError("OpenCode used a tool in a tools-denied transformation")
+    result = {"content": "".join(content), "response_id": session,
+              "error": "; ".join(errors)}
+    if completion is not None:
+        finishes.append(completion)
+        result["completion_source"] = "session_export"
+        result["completion"] = {k: completion[k] for k in (
+            "message_id", "completed", "model")}
+    if finishes:
+        result["finish_reason"] = finishes[-1].get("reason")
+        native = [part.get("tokens") for part in finishes]
+        if all(isinstance(tokens, dict) for tokens in native):
+            def count(field, cache=False):
+                values = [(tokens.get("cache") or {}).get(field) if cache
+                          else tokens.get(field) for tokens in native]
+                if any(isinstance(v, bool) or not isinstance(v, (int, float))
+                       or v < 0 for v in values):
+                    raise ValueError("OpenCode returned invalid token accounting")
+                return sum(values)
+            fresh, output, reasoning = [count(k) for k in (
+                "input", "output", "reasoning")]
+            read, write = count("read", True), count("write", True)
+            result["usage"] = {
+                "prompt_tokens": fresh + read + write,
+                "completion_tokens": output + reasoning,
+                "reasoning_tokens": reasoning,
+                "cache_read_input_tokens": read,
+                "cache_creation_input_tokens": write,
+                "total_tokens": fresh + read + write + output + reasoning}
+        costs = [part.get("cost") for part in finishes]
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool)
+               and v >= 0 for v in costs):
+            result["cost_usd"] = sum(costs)
+    return result
 
 
 def _cmd(harness: str, model: str, workdir: pathlib.Path, prompt: str,
@@ -406,19 +609,13 @@ def _cmd(harness: str, model: str, workdir: pathlib.Path, prompt: str,
                 # part and emit one JSON object is not suitable for this pipeline.
                 "--max-model-steps", "1"]
     if harness == "opencode":
-        # `run` is the headless entrypoint; the prompt is positional, like agy.
-        # Runs under a no-tools agent (see _lean_dir): the payload is already
-        # inline and the answer is JSON, so a coding agent's tool schemas are
-        # pure overhead on a quota. --dir is that agent's config directory,
-        # which is also the tightest possible file scope -- it holds one file.
-        # --title is not cosmetic: without it opencode spends a SECOND model call
-        # per invocation asking for a session title. On a 36-call document that is
-        # 36 calls of pure waste against the same quota the document is competing
-        # for, and the title is never read by anything.
-        return [OPENCODE, "run", "-m", model,
-                "--variant", option["variant"],
-                "--agent", LEAN_AGENT, "--title", "summ",
-                "--dir", str(_lean_dir(workdir)), prompt]
+        # Standalone honours this run's isolated storage and config instead of
+        # the user's shared coding server. A supplied title avoids a paid title
+        # generation call. The complete prompt travels unchanged on stdin.
+        variant = option.get("variant")
+        reference = f"{model}#{variant}" if variant else model
+        return [OPENCODE, "run", "--standalone", "--model", reference,
+                "--agent", LEAN_AGENT, "--title", "summ", "--format", "json"]
     if harness == "grok":
         # THE PROMPT CANNOT RIDE ON ARGV. Windows CreateProcessW caps the whole
         # command line at 32,767 characters, so a document prompt may not fit.
@@ -988,6 +1185,12 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
             raise Abort(f"{stage}: invalid SUMM_TARGET_DEADLINE_UNIX")
 
     for mi, (harness, model) in enumerate(resolved):
+        try:
+            model_config.require_enabled(harness)
+        except runtime.ConfigError as exc:
+            raise Abort(str(exc)) from exc
+        if harness == "opencode":
+            _opencode_policy(model, workdir)
         remaining = remaining_seconds()
         if remaining is not None and remaining <= 0:
             last = "target deadline exceeded before the next route"
@@ -1081,6 +1284,7 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                 on_stdin = harness in STDIN_HARNESSES
                 with runtime.resource_lease(harness) as resource_wait_s:
                     rec["resource_wait_s"] = round(resource_wait_s, 3)
+                    model_config.require_enabled(harness)
                     if harness in GATEWAY_HARNESSES:
                         # Warm-on-demand: a 503 "warming" means the model is
                         # loading. Honor
@@ -1093,6 +1297,7 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                         warm_deadline = time.monotonic() + warm_seconds
                         while True:
                             try:
+                                model_config.require_enabled(harness)
                                 gateway_result = gateway.chat(
                                     harness, model, prompt,
                                     request_options=call_option,
@@ -1133,11 +1338,15 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                                     [harness, model], 1, "", str(ge))
                                 break
                     else:
+                        child_env = (opencode_env(model, workdir)
+                                     if harness == "opencode" else None)
+                        model_config.require_enabled(harness)
                         r = subprocess.run(
                             _cmd(harness, model, workdir, prompt, option,
                                  timeout_seconds=attempt_timeout),
                             cwd=cli_cwd(harness, workdir),
                             capture_output=True, text=True, timeout=attempt_timeout,
+                            **({"env": child_env} if child_env is not None else {}),
                             **({"input": prompt} if on_stdin
                                else {"stdin": subprocess.DEVNULL}))
             except subprocess.TimeoutExpired as exc:
@@ -1206,6 +1415,42 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
             rec.update(returncode=r.returncode,
                        stdout_bytes=len(stdout.encode()),
                        stdout_words=len(stdout.split()))
+            if harness == "opencode" and stdout.strip():
+                try:
+                    response = opencode_response(stdout)
+                    if (r.returncode == 0 and not response["error"]
+                            and not response.get("finish_reason")):
+                        completion = opencode_completion(
+                            response, model, option.get("variant"), child_env, workdir)
+                        response = opencode_response(stdout, completion)
+                except (TypeError, ValueError, AttributeError) as exc:
+                    last = f"unusable OpenCode transport: {str(exc)[:80]}"
+                    record_attempt(workdir, rec, t0, outcome="unusable",
+                                   detail=last)
+                    mechanical = True
+                    advance = True
+                    break
+                rec.update({key: response[key] for key in (
+                    "response_id", "finish_reason", "usage", "cost_usd",
+                    "completion_source")
+                    if key in response})
+                (workdir / f"{attempt_prefix}.response.json").write_text(json.dumps(
+                    {k: v for k, v in response.items() if k != "content"},
+                    indent=2, ensure_ascii=False))
+                stdout = response["content"]
+                if response["error"]:
+                    stderr = response["error"]
+                    r = subprocess.CompletedProcess(r.args, 1, stdout, stderr)
+                elif response.get("finish_reason") != "stop":
+                    reason = response.get("finish_reason")
+                    # A complete JSON answer remains usable at the output cap;
+                    # the stage's own validator still enforces its contract.
+                    if not (reason == "length" and
+                            json_contract.document_status(stdout) == "complete"):
+                        gateway_kind = ("output_limit" if reason == "length"
+                                        else "unusable")
+                        stderr = f"OpenCode finish_reason={reason!r}"
+                        r = subprocess.CompletedProcess(r.args, 1, stdout, stderr)
             # A quota diagnostic is a transport condition, not an answer, and
             # it is classified before any schema check regardless of exit
             # code or which stream carried it.
@@ -1220,8 +1465,7 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
             # plausible partial Markdown or JSON on stdout; accepting it turns a
             # failed process into an approved artifact.
             if r.returncode == 0 and stdout.strip():
-                # grok answers in a transport envelope; every other harness puts
-                # the stage's own bytes on stdout. Normalise before validating,
+                # Normalize transport envelopes before stage validation,
                 # and keep the raw envelope in stage.stdout.txt above as
                 # evidence -- it carries the session id, stop reason and the
                 # model's narration, which is what explains a failed run later.

@@ -19,11 +19,22 @@ ROLE_MODEL_OVERRIDES = {
 def committed() -> dict:
     try:
         value = json.loads((HERE / "models.json").read_text())
-    except Exception as exc:
-        raise runtime.ConfigError(f"models.json unreadable: {exc}") from exc
+    except Exception:
+        raise runtime.ConfigError("models.json unreadable: cannot read JSON") from None
     if not isinstance(value, dict):
         raise runtime.ConfigError("models.json must contain one object")
+    runtime.credential_envs(catalog=value)
     return value
+
+
+def validate_environment() -> dict:
+    """Ingest both declaration sources before consuming application controls.
+
+    The catalog has a fixed source path, so reject its discovery-name conflicts
+    before runtime.config needs any environment-based location information.
+    """
+    committed()
+    return runtime.config()
 
 
 def roster(runtime_config: dict | None = None) -> dict:
@@ -40,6 +51,9 @@ def roster(runtime_config: dict | None = None) -> dict:
             raise runtime.ConfigError(
                 f"gateway {name!r} collides with a committed harness roster")
         out[name] = dict(local)
+    for name, spec in out.items():
+        if not isinstance(spec.get("_enabled", True), bool):
+            raise runtime.ConfigError(f"{name}._enabled must be a boolean")
     return out
 
 
@@ -50,6 +64,35 @@ def full(runtime_config: dict | None = None) -> dict:
 
 def defaults() -> dict:
     return dict(committed().get("_defaults") or {})
+
+
+def default_harness() -> str:
+    """Derive the daily backend from the shared default writing profile."""
+    profile = defaults().get("profile") or {}
+    write = profile.get("write")
+    if (not isinstance(write, list) or len(write) < 2
+            or not isinstance(write[0], str) or not write[0]):
+        raise runtime.ConfigError("default profile must declare a writing harness")
+    return write[0]
+
+
+def require_enabled(harness: str, roster_value: dict | None = None) -> None:
+    """Retain route identity while refusing a suspended backend before spend.
+
+    Dispatch checks the catalog again so frozen profiles and environment chains
+    cannot undo a suspension. Credentials and model settings remain intact.
+    """
+    configured = roster() if roster_value is None else roster_value
+    spec = configured.get(harness)
+    if not isinstance(spec, dict):
+        raise runtime.ConfigError(f"model roster has no harness {harness!r}")
+    enabled = spec.get("_enabled", True)
+    if not isinstance(enabled, bool):
+        raise runtime.ConfigError(f"{harness}._enabled must be a boolean")
+    if not enabled:
+        raise runtime.ConfigError(
+            f"backend {harness!r} is disabled in models.json; "
+            "choose an enabled profile or re-enable its _enabled flag")
 
 
 def gateway_harnesses(runtime_config: dict | None = None) -> frozenset[str]:
@@ -191,6 +234,7 @@ def role_chains(harness: str, roles=ROLES, environ=None,
     configured = roster() if roster_value is None else roster_value
     if harness not in configured:
         raise runtime.ConfigError(f"model roster has no harness {harness!r}")
+    require_enabled(harness, configured)
     env = os.environ if environ is None else environ
     local = local_harnesses(configured)
     fallback = defaults().get("fallback") or {}
@@ -208,6 +252,8 @@ def role_chains(harness: str, roles=ROLES, environ=None,
             entries = str(env.get(variable) or "").split()
         else:
             entries = list((configured[harness].get(role) or ()))
+        for entry in entries:
+            require_enabled(split_entry(entry, harness, configured)[0], configured)
         resolved = [resolve_entry(entry, harness, role=role,
                                   roster_value=configured)
                     for entry in entries]
@@ -218,6 +264,7 @@ def role_chains(harness: str, roles=ROLES, environ=None,
                     and fb.get("harness") and fb.get("model")):
                 continue
             fallback_harness = str(fb["harness"])
+            require_enabled(fallback_harness, configured)
             fallback_model = str(fb["model"])
             fallback_value = str(fb.get("variant") or fb.get("effort") or "")
             raw = (fallback_model if fallback_harness == harness else

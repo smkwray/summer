@@ -646,6 +646,33 @@ def _run_pair(*, source: str, review_source: str, out_dir: pathlib.Path,
                             continue
                         break
                 raise last
+        if v2:
+            # Keep disclosure/scoring unchanged, but bind locally detectable
+            # mechanical findings to the exact candidate spans being repaired.
+            # A bare label otherwise vetoes even an anchored semantic repair.
+            local_findings = {}
+            for artifact, segments in pair_patch.segment_pair(
+                    current["detailed"], current["brief"]).items():
+                if artifact not in {"detailed", "brief"}:
+                    continue
+                for segment in segments:
+                    for finding in ss.defects(segment["text"], source):
+                        local_findings.setdefault(finding, []).append({
+                            "kind": "mechanical", "artifact": artifact,
+                            "anchor": segment["id"], "slot": "",
+                            "text": finding,
+                        })
+            scoped_mechanical, included = [], set()
+            for finding in current.get("mechanical") or []:
+                if isinstance(finding, str) and finding in local_findings:
+                    if finding not in included:
+                        scoped_mechanical.extend(local_findings[finding])
+                        included.add(finding)
+                else:
+                    # Unknown/global findings still meet the ordinary scope
+                    # gate; an exact detector witness is required to anchor.
+                    scoped_mechanical.append(finding)
+            current = dict(current, mechanical=scoped_mechanical)
         turn = pair_review.repair_turn(
             current, base_prompt, force_patch=v2, bounded=v2)
         fix = custom_instructions.decorate_prompt(turn["prompt"])

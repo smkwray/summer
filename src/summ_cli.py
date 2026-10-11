@@ -13,8 +13,16 @@ import argparse, hashlib, json, os, re, shutil, signal, subprocess, sys, tempfil
 
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE))
-import progress, runtime, eta, custom_instructions
-import mode_config, model_config, profiles, selection
+import runtime, model_config
+try:
+    model_config.validate_environment()
+except runtime.ConfigError as exc:
+    if __name__ == "__main__":
+        print(f"runtime/model configuration unreadable: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    raise
+import progress, eta, custom_instructions
+import mode_config, profiles, selection
 import fullsum
 import route_caps
 
@@ -34,6 +42,7 @@ HARNESSES = configured_harnesses()
 
 def validate_roles(harness: str, roster: dict, roles) -> None:
     """Fail closed only for roles the target will actually call."""
+    model_config.require_enabled(harness, roster)
     local_only = bool(os.environ.get("SUMM_LOCAL_ONLY"))
     local = {name for name, spec in roster.items()
              if isinstance(spec, dict) and spec.get("_local") is True}
@@ -49,6 +58,7 @@ def validate_roles(harness: str, roster: dict, roles) -> None:
         for entry in entries:
             selected_harness, model = model_config.split_entry(
                 entry, harness, roster)
+            model_config.require_enabled(selected_harness, roster)
             if selected_harness not in roster:
                 errors.append(f"{role} names unknown harness {selected_harness!r}")
             elif model_config.logical_model(
@@ -189,9 +199,23 @@ class CancellationToken:
 
 
 def install_cancel_handlers(token: CancellationToken):
-    """Signals request cancellation; they never interrupt publication code."""
+    """Signals request cancellation; they never interrupt publication code.
+
+    SIGHUP is ignored: a closed launch shell (common when an agent backgrounds
+    ``summ_cli``) must not kill a long summarization. SIGINT/SIGTERM/SIGBREAK
+    still request cooperative cancel. Worker stages already use a private
+    POSIX session (``start_new_session``).
+    """
     def request(_signum, _frame):
         token.request()
+
+    # Ignore hangup from a dying parent shell; do not treat it as cancel.
+    sighup = getattr(signal, "SIGHUP", None)
+    if sighup is not None:
+        try:
+            signal.signal(sighup, signal.SIG_IGN)
+        except (OSError, ValueError):
+            pass
 
     for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
         value = getattr(signal, name, None)
@@ -1200,7 +1224,7 @@ def doctor() -> int:
                "speechprep-audit.txt", "speechprep-repair.txt"):
         chk(f"prompts/{pr}", (HERE / "prompts" / pr).is_file())
 
-    harness = os.environ.get("HARNESS", "agy")
+    harness = os.environ.get("HARNESS") or model_config.default_harness()
 
     # Resolve the same merged committed-plus-device roster as production. A
     # chain entry may name its own harness, and only the roles active for this
@@ -1267,6 +1291,13 @@ def doctor() -> int:
 
 # ------------------------------------------------------------------ main ---
 def main():
+    # Also validate callers that imported this module before changing the
+    # environment. No profile, harness, progress or filesystem effects precede it.
+    try:
+        runtime_snapshot = model_config.validate_environment()
+    except runtime.ConfigError as exc:
+        print(f"runtime/model configuration unreadable: {exc}", file=sys.stderr)
+        return 2
     ap = argparse.ArgumentParser()
     ap.add_argument("--depth", choices=["full", "brief"], default="full",
                     help="accepted for compatibility; both triggers pass it. It "
@@ -1290,7 +1321,7 @@ def main():
                                  "writes one atomic .clean.md artifact or nothing")
     ap.add_argument("--harness", default=None,
                     help="select a configured model harness. Defaults to $HARNESS, "
-                         "then agy.")
+                         "then the shared default profile's writing backend.")
     ap.add_argument("--doctor", action="store_true",
                     help="preflight the install (no model calls) and exit")
     ap.add_argument("--progress-jsonl", metavar="PATH",
@@ -1349,6 +1380,8 @@ def main():
                     help="custom naming affix string for secondary output artifact (brief in two-artifact modes)")
     ap.add_argument("paths", nargs="*")
     a = ap.parse_args()
+    if not a.profile and not a.harness and not os.environ.get("HARNESS"):
+        a.profile = profiles.DEFAULT_PROFILE
     cancel = CancellationToken(a.cancel_file)
     install_cancel_handlers(cancel)
 
@@ -1368,7 +1401,6 @@ def main():
         os.environ.setdefault("SUMM_WRITING_CONTRACT", "v2")
 
     try:
-        runtime_snapshot = runtime.config()
         os.environ["SUMM_RUNTIME_JSON"] = runtime.frozen_json(runtime_snapshot)
         roster = model_config.roster()
     except Exception as e:
@@ -1432,7 +1464,7 @@ def main():
             str(write_value[0]) if isinstance(write_value, (list, tuple))
             and len(write_value) >= 2 else "")
         profile_harness = (a.harness or os.environ.get("HARNESS")
-                           or profile_default_harness or "agy")
+                           or profile_default_harness or model_config.default_harness())
         picks = {}
         for role in potential_roles:
             value = profile.get(role)
@@ -1480,7 +1512,7 @@ def main():
     # the environment was silently overwritten with "agy" on EVERY run -- a
     # request for one model quietly answered by another, which is the one kind
     # of failure this project is not allowed to have.
-    harness = a.harness or os.environ.get("HARNESS") or "agy"
+    harness = a.harness or os.environ.get("HARNESS") or model_config.default_harness()
     if harness not in harnesses:
         print(f"unknown harness {harness!r} (from $HARNESS); expected one of "
               f"{', '.join(harnesses)}", file=sys.stderr)
