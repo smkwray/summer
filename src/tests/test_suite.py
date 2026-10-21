@@ -6657,12 +6657,14 @@ class BoundedRoleRecovery(unittest.TestCase):
 class BoundedMechanicalRepair(unittest.TestCase):
     """Local mechanical witnesses must not veto a scoped semantic correction."""
 
-    def run_pair(self, anchored=True):
+    def run_pair(self, anchored=True, numbers=False):
         fs, ss, pp = load("fullsum"), load("shortsum"), load("pair_patch")
         detailed = "\n\n".join([
             "Background evidence remains conditional. " * 8,
-            "We describe limited evidence. " * 8,
-            "The effect is certain and causal. " * 8,
+            "We describe limited evidence. " * 8
+            + ("The gap is 47 points. " if numbers else ""),
+            "The effect is certain and causal. " * 8
+            + ("The gap is 1959 points. " if numbers else ""),
         ]).strip()
         brief = ("Our interpretation establishes causation. " * 6).strip()
         replacements = {
@@ -6747,6 +6749,19 @@ class BoundedMechanicalRepair(unittest.TestCase):
         self.assertIn("the detailed reading is", repairs[0])
         self.assertNotIn("first person", load("shortsum").defects(published[0], ""))
         self.assertNotIn("first person", load("shortsum").defects(published[1], ""))
+
+    def test_aggregated_number_finding_binds_to_each_local_witness(self):
+        # Ameri wk13: the pair-level "numbers absent: ['16.9', '3.4']" matched
+        # no per-paragraph witness, so the whole bounded repair was refused.
+        rc, report, calls, _published = self.run_pair(numbers=True)
+        self.assertEqual(rc, 0)
+        self.assertNotEqual(report["repair"], "unavailable")
+        repairs = [prompt for stage, prompt in calls if "revise" in stage]
+        self.assertEqual(len(repairs), 1)
+        self.assertIn("mechanical detailed anchor=D-P002 slot=- "
+                      "numbers absent from the source: ['47']", repairs[0])
+        self.assertIn("mechanical detailed anchor=D-P003 slot=- "
+                      "numbers absent from the source: ['1959']", repairs[0])
 
     def test_local_mechanical_witness_does_not_scope_unknown_semantic_finding(self):
         rc, report, calls, _published = self.run_pair(anchored=False)

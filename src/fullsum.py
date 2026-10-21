@@ -662,12 +662,27 @@ def _run_pair(*, source: str, review_source: str, out_dir: pathlib.Path,
                             "anchor": segment["id"], "slot": "",
                             "text": finding,
                         })
+            # A pair-level detector finding aggregates its witnesses (and
+            # truncates the list), so "numbers absent: ['16.9', '3.4']" never
+            # equals the per-segment "['3.4']" and "['16.9']". Bind such a
+            # finding to every local witness of the same detector label.
+            by_label = {}
+            for text in local_findings:
+                if ": " in text:
+                    by_label.setdefault(text.split(": ", 1)[0], []).append(text)
             scoped_mechanical, included = [], set()
             for finding in current.get("mechanical") or []:
-                if isinstance(finding, str) and finding in local_findings:
-                    if finding not in included:
-                        scoped_mechanical.extend(local_findings[finding])
-                        included.add(finding)
+                witnesses = []
+                if isinstance(finding, str):
+                    if finding in local_findings:
+                        witnesses = [finding]
+                    elif ": " in finding:
+                        witnesses = by_label.get(finding.split(": ", 1)[0], [])
+                if witnesses:
+                    for text in witnesses:
+                        if text not in included:
+                            scoped_mechanical.extend(local_findings[text])
+                            included.add(text)
                 else:
                     # Unknown/global findings still meet the ordinary scope
                     # gate; an exact detector witness is required to anchor.
