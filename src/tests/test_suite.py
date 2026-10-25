@@ -10561,9 +10561,15 @@ class ProfilesAndAStableWindow(unittest.TestCase):
         self.assertNotIn(str(ENG), str(self.real))
 
     def test_disabled_profile_is_refused_without_changing_models(self):
-        disabled = next(h for h, spec in self.ui.model_config.roster().items()
-                        if spec.get("_enabled") is False)
-        roster = self.ui.model_config.roster()[disabled]
+        config = self.ui.model_config.roster()
+        disabled = next(h for h in config
+                        if h != self.ui.model_config.default_harness())
+        config[disabled] = {**config[disabled], "_enabled": False}
+        with unittest.mock.patch.object(self.ui.model_config, "roster",
+                                         return_value=config):
+            self._assert_disabled_profile_is_refused(disabled, config[disabled])
+
+    def _assert_disabled_profile_is_refused(self, disabled, roster):
         self.ui.save_profiles({"parked": {
             role: [disabled, roster[role][0]] for role in self.ui.ROLES}})
         before = {r: (self.app.role_h[r].get(), self.app.role_vars[r].get())
@@ -14160,10 +14166,13 @@ class SuspendedBackendsCannotSpend(unittest.TestCase):
         self.ms = load("mapsum")
         self.mc = self.ms.model_config
         self.config = self.mc.roster()
-        self.disabled = next(h for h, spec in self.config.items()
-                             if spec.get("_enabled") is False)
-        self.model = self.config[self.disabled]["write"][0]
         self.enabled = self.mc.default_harness()
+        self.disabled = next(h for h in self.config if h != self.enabled)
+        self.config[self.disabled] = {**self.config[self.disabled], "_enabled": False}
+        patch = unittest.mock.patch.object(self.mc, "roster", return_value=self.config)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.model = self.config[self.disabled]["write"][0]
 
     def test_disabled_routes_keep_their_qualified_identity(self):
         self.assertEqual((self.disabled, self.model), self.mc.split_entry(
@@ -14196,6 +14205,110 @@ class SuspendedBackendsCannotSpend(unittest.TestCase):
                 self.mc.require_enabled(self.disabled, config)
         config = {self.disabled: {**self.config[self.disabled], "_enabled": True}}
         self.mc.require_enabled(self.disabled, config)
+
+
+class MuseSubscriptionTransport(unittest.TestCase):
+    def setUp(self):
+        self.ms = load("mapsum")
+        self.model = self.ms.model_config.roster()["muse"]["write"][0]
+        self.status = {"schemaVersion": 1, "allowance": {"tier": "Example plan"},
+                       "reason": None, "hint": None}
+
+    def test_subscription_model_is_selectable_in_every_role(self):
+        roster = self.ms.model_config.roster()
+        ui = load("summ_ui")
+        cli = load("summ_cli")
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            cli.validate_roles("muse", roster, self.ms.mode_config.ROLES)
+        for role in self.ms.mode_config.ROLES:
+            self.assertIn(self.model, ui.model_choices("muse", role))
+        setting = self.ms.model_setting("muse", self.model)
+        self.assertEqual("on", setting["contributor_mode"])
+        self.assertEqual("high", setting["default"])
+        self.assertNotIn("ultra", setting["values"])
+
+    def test_real_dispatch_checks_subscription_then_uses_same_clean_environment(self):
+        calls = []
+        def dispatch(argv, **kw):
+            calls.append((argv, kw))
+            content = json.dumps(self.status) if argv[1] == "usage" else '{"ok":true}'
+            return subprocess.CompletedProcess(argv, 0, content, "")
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.dict(os.environ, {
+                    "META_API_KEY": "SYNTHETIC-SECRET", "meta_api_key": "other",
+                    "MUSE_CONTRIBUTOR_MODE": "0", "MUSE_TRANSPORT_TRACE": "1"}), \
+                unittest.mock.patch.object(self.ms.subprocess, "run", dispatch):
+            answer = self.ms.run("composed payload", pathlib.Path(td),
+                                 [f"muse:{self.model}"], "plan001")
+            self.assertIn('"ok"', answer)
+            self.assertEqual(["usage", "exec"], [a[0][1] for a in calls])
+            self.assertEqual(calls[0][1]["env"], calls[1][1]["env"])
+            for argv, kw in calls:
+                self.assertFalse(any(key.upper() == "META_API_KEY" for key in kw["env"]))
+                self.assertNotIn("MUSE_TRANSPORT_TRACE", kw["env"])
+            argv = calls[1][0]
+            self.assertEqual("on", argv[argv.index("--contributor-mode") + 1])
+            self.assertEqual(self.model, argv[argv.index("--model") + 1])
+            self.assertEqual("1", argv[argv.index("--max-model-steps") + 1])
+            prompt = pathlib.Path(argv[argv.index("--prompt-file") + 1]).read_text()
+            self.assertIn("composed payload", prompt)
+            self.assertEqual("SYNTHETIC-SECRET", os.environ["META_API_KEY"])
+
+    def test_unproved_subscription_aborts_before_model_or_fallback(self):
+        bad = (
+            {**self.status, "allowance": None, "reason": "api_key"},
+            {**self.status, "allowance": None, "reason": "no_subscription"},
+            {**self.status, "reason": "stale"},
+            {**self.status, "allowance": {"tier": ""}},
+            {**self.status, "schemaVersion": 99}, None, [], {},
+        )
+        for status in bad:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as td, \
+                    unittest.mock.patch.object(self.ms.subprocess, "run",
+                        return_value=subprocess.CompletedProcess(
+                            [], 0, json.dumps(status), "SYNTHETIC-SECRET")) as dispatch:
+                with self.assertRaisesRegex(self.ms.Abort, "API billing is not allowed"):
+                    self.ms.run("payload", pathlib.Path(td),
+                                [f"muse:{self.model}", "codex:example"], "plan001")
+                self.assertEqual(1, dispatch.call_count)
+                self.assertEqual("usage", dispatch.call_args.args[0][1])
+
+    def test_failed_or_malformed_usage_never_exposes_auth_diagnostics(self):
+        errors = (
+            subprocess.TimeoutExpired("usage", 30, output="SYNTHETIC-SECRET"),
+            OSError("SYNTHETIC-SECRET"),
+        )
+        with tempfile.TemporaryDirectory() as td:
+            for error in errors:
+                with self.subTest(error=type(error).__name__), \
+                        unittest.mock.patch.object(self.ms.subprocess, "run", side_effect=error):
+                    with self.assertRaises(self.ms.Abort) as caught:
+                        self.ms.muse_env(pathlib.Path(td))
+                    self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+            for code, text in ((1, json.dumps(self.status)), (0, "SYNTHETIC-SECRET")):
+                with unittest.mock.patch.object(self.ms.subprocess, "run",
+                        return_value=subprocess.CompletedProcess([], code, text, "secret")):
+                    with self.assertRaises(self.ms.Abort) as caught:
+                        self.ms.muse_env(pathlib.Path(td))
+                    self.assertNotIn("SYNTHETIC-SECRET", str(caught.exception))
+
+    def test_capacity_fallback_keeps_subscription_authentication(self):
+        models = self.ms.model_config.roster()["muse"]["write"]
+        calls = []
+        def dispatch(argv, **kw):
+            calls.append((argv, kw))
+            if argv[1] == "usage":
+                return subprocess.CompletedProcess(argv, 0, json.dumps(self.status), "")
+            if argv[argv.index("--model") + 1] == models[0]:
+                return subprocess.CompletedProcess(argv, 1, "", "quota exhausted")
+            return subprocess.CompletedProcess(argv, 0, '{"ok":true}', "")
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.dict(os.environ, {"META_API_KEY": "SYNTHETIC-SECRET"}), \
+                unittest.mock.patch.object(self.ms.subprocess, "run", dispatch):
+            self.ms.run("payload", pathlib.Path(td),
+                        [f"muse:{model}" for model in models], "plan001")
+        self.assertEqual(["usage", "exec", "usage", "exec"], [a[0][1] for a in calls])
+        self.assertTrue(all("META_API_KEY" not in kw["env"] for _, kw in calls))
 
 
 def _isolated_main() -> int:

@@ -27,7 +27,9 @@ def _default_agy_binary():
 AGY = os.path.expanduser(os.environ.get("AGY_BIN", _default_agy_binary()))
 CLAUDE = os.path.expanduser(os.environ.get("CLAUDE_BIN", "claude"))
 OPENCODE = os.path.expanduser(os.environ.get("OPENCODE_BIN", "opencode"))
-MUSE = os.path.expanduser(os.environ.get("MUSE_BIN", "~/.local/bin/muse"))
+MUSE = os.path.expanduser(os.environ.get(
+    "MUSE_BIN", (shutil.which("muse") or shutil.which("muse.exe") or "muse")
+    if os.name == "nt" else "~/.local/bin/muse"))
 CODEX = os.path.expanduser(os.environ.get("CODEX_BIN", "codex"))
 GROK = os.path.expanduser(os.environ.get("GROK_BIN", "~/.local/bin/grok"))
 CURSOR = os.path.expanduser(os.environ.get("CURSOR_BIN", "cursor-agent"))
@@ -353,6 +355,38 @@ def cursor_payload(stdout: str) -> str:
     return result
 
 
+def muse_env(workdir: pathlib.Path) -> dict:
+    """Bind subscription routes to the CLI's signed-in subscription account.
+
+    API keys override browser login. Remove that override in this child only,
+    then ask the official CLI to verify the selected stored credential's live
+    allowance. A saved API key, expired login or missing subscription aborts
+    before a model turn; raw authentication diagnostics are never retained.
+    """
+    env = {key: value for key, value in os.environ.items()
+           if key.upper() not in {"META_API_KEY", "MUSE_TRANSPORT_TRACE"}}
+    try:
+        result = subprocess.run(
+            [MUSE, "usage", "--json"], cwd=run_root(workdir), env=env,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Abort("Muse subscription check did not complete; update Muse Code "
+                    "and check its browser login") from None
+    try:
+        status = json.loads(result.stdout)
+        allowance = status["allowance"]
+        valid = (result.returncode == 0 and status["schemaVersion"] == 1
+                 and status["reason"] is None and isinstance(allowance, dict)
+                 and isinstance(allowance.get("tier"), str)
+                 and bool(allowance["tier"].strip()))
+    except (ValueError, TypeError, KeyError):
+        valid = False
+    if not valid:
+        raise Abort("Muse requires an active Muse Code subscription and browser "
+                    "login for this model; API billing is not allowed")
+    return env
+
+
 def _lean_dir(workdir: pathlib.Path) -> pathlib.Path:
     d = run_root(workdir).resolve() / ".oc"
     d.mkdir(parents=True, exist_ok=True)
@@ -587,15 +621,15 @@ def _cmd(harness: str, model: str, workdir: pathlib.Path, prompt: str,
                 "--disable", "fast_mode", "--skip-git-repo-check", "--color", "never",
                 "--sandbox", "read-only", "-c", "approval_policy=never", "-"]
     if harness == "muse":
-        # `exec` is the headless one-prompt runner. --workspace is the permission
-        # root and must be the RUN directory: the prompts name files in rv/ and
-        # ledger/, and rooting it at one of those makes the other unreadable.
-        # This is a PAID model, so the run is bounded and stripped of everything
-        # it does not need: no web, no writes, no shell, and a step cap. Approval
-        # is off only so that reading the source does not block on a prompt
-        # nobody is there to answer.
+        # The file contains Summer's complete composed prompt. No source path
+        # is supplied. Bound this one-shot transformation to a single step.
         root = run_root(workdir)
-        return [MUSE, "exec", "--model", model,
+        setting = model_setting(harness, model)
+        contributor = setting.get("contributor_mode")
+        if contributor is not None and contributor not in ("on", "off"):
+            raise Abort("Muse contributor_mode must be on or off")
+        return [MUSE, "exec", "--provider", "meta", "--model", model,
+                *(["--contributor-mode", contributor] if contributor else []),
                 "--prompt-file", str(_prompt_file(workdir, prompt)),
                 "--reasoning-effort", option["effort"],
                 "--workspace", str(root),
@@ -1269,6 +1303,11 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                    "prompt_words": len(prompt.split()),
                    "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()}
             rec.update(option)
+            if harness == "muse":
+                rec["authentication"] = "subscription"
+                contributor = model_setting(harness, model).get("contributor_mode")
+                if contributor:
+                    rec["contributor_mode"] = contributor
             if harness in GATEWAY_HARNESSES:
                 call_option = dict(option)
                 if gateway_options:
@@ -1339,7 +1378,9 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                                 break
                     else:
                         child_env = (opencode_env(model, workdir)
-                                     if harness == "opencode" else None)
+                                     if harness == "opencode" else
+                                     muse_env(workdir)
+                                     if harness == "muse" else None)
                         model_config.require_enabled(harness)
                         r = subprocess.run(
                             _cmd(harness, model, workdir, prompt, option,

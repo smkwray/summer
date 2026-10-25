@@ -214,6 +214,19 @@
   },
   "muse": {
     "_model_settings": {
+      "muse-wonder-1.0": {
+        "option": "effort",
+        "values": [
+          "minimal",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high",
+        "contributor_mode": "on"
+      },
       "muse-spark-1.3-contributor": {
         "option": "effort",
         "values": [
@@ -229,18 +242,22 @@
       }
     },
     "plan": [
+      "muse-wonder-1.0",
       "muse-spark-1.3-contributor"
     ],
     "write": [
+      "muse-wonder-1.0",
       "muse-spark-1.3-contributor"
     ],
     "audit": [
+      "muse-wonder-1.0",
       "muse-spark-1.3-contributor"
     ],
     "repair": [
+      "muse-wonder-1.0",
       "muse-spark-1.3-contributor"
     ],
-    "_enabled": false
+    "_enabled": true
   },
   "codex": {
     "_model_settings": {

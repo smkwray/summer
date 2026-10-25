@@ -74,8 +74,18 @@ prompt prefix within the cache lifetime.
 
 A backend can be suspended by setting its `_enabled` flag to `false` in the
 model catalog. Summer rejects its saved profiles and explicit routes before
-dispatch, while preserving its model settings and credentials. Muse is
-currently suspended; restoring its flag makes it available again.
+dispatch, while preserving its model settings and credentials.
+
+Muse offers Wonder with Contributor mode enabled through a Muse Code
+subscription. Update the Muse CLI, sign in with `muse login`, and check
+`muse usage` before choosing Wonder in the desktop role menus or running
+`--harness muse`. Summer verifies the subscription through the CLI before each
+Muse call and excludes `META_API_KEY` from that child process. A missing
+subscription or a stored API credential stops the run before a model turn.
+Contributor mode permits Meta to use submitted content for training; see
+[Muse Code subscriptions](https://dev.meta.ai/docs/muse-code/subscriptions).
+Spark remains available through the subscription as well. Saved API credentials
+are preserved for standalone use.
 
 Gateway settings remain on the device and are not part of this repository:
 
