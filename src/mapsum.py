@@ -287,7 +287,7 @@ def cli_cwd(harness: str, workdir: pathlib.Path) -> pathlib.Path:
     if harness == "cursor":
         return cursor_workspace(workdir)
     if harness == "opencode":
-        return _lean_dir(workdir)
+        return _opencode_place()
     return workdir
 
 
@@ -423,14 +423,15 @@ def _opencode_policy(model: str, workdir: pathlib.Path):
     d = run_root(workdir).resolve() / ".oc"
     directories = {"XDG_DATA_HOME": d / "data", "XDG_CACHE_HOME": d / "cache",
                    "XDG_STATE_HOME": d / "state", "XDG_CONFIG_HOME": d / "config",
-                   "HOME": d / "home", "USERPROFILE": d / "home",
-                   "TMPDIR": d / "tmp", "TMP": d / "tmp", "TEMP": d / "tmp"}
+                   "HOME": d / "home", "USERPROFILE": d / "home"}
     controlled = {name: str(path) for name, path in directories.items()}
-    controlled.update(PWD=str(d), OPENCODE_CONFIG_DIR=str(d),
+    controlled.update(OPENCODE_CONFIG_DIR=str(d),
                       OPENCODE_CONFIG=str(d / "opencode.json"),
                       OPENCODE_CONFIG_PROJECT_DISABLE="1",
                       OPENCODE_DB=str(d / "data" / "opencode" / "opencode.db"))
-    reserved = {"OPENCODE_MODELS_PATH", "OPENCODE_DISABLE_MODELS_FETCH"}
+    # Set per process by opencode_env: the catalog, and a neutral place.
+    reserved = {"OPENCODE_MODELS_PATH", "OPENCODE_DISABLE_MODELS_FETCH",
+                "PWD", "TMPDIR", "TMP", "TEMP"}
     if (variable.upper() in inherited | controlled.keys() | reserved
             or variable.upper().startswith(("XDG_", "NODE_", "BUN_", "DYLD_", "LD_"))):
         raise Abort("OpenCode selected credential name conflicts with child-process controls")
@@ -460,6 +461,18 @@ def _login_root() -> pathlib.Path:
             _LOGIN_ROOT.append(path)
             atexit.register(runtime.dispose_login_dir, path)
         return _LOGIN_ROOT[0]
+
+
+def _opencode_place() -> pathlib.Path:
+    """An empty working and temporary directory for OpenCode.
+
+    OpenCode tells the model its working directory, workspace root and
+    temporary directory. An empty directory in Summer's private temporary
+    directory keeps the work root, its repository and its name out of that.
+    """
+    place = _login_root() / "opencode"
+    (place / "tmp").mkdir(parents=True, exist_ok=True)
+    return place
 
 
 def _child_env() -> dict | None:
@@ -646,6 +659,9 @@ def opencode_env(model: str, workdir: pathlib.Path,
     for path in set(directories.values()):
         path.mkdir(exist_ok=True)
     env.update(controlled)
+    place = _opencode_place()
+    env.update(PWD=str(place), TMPDIR=str(place / "tmp"), TMP=str(place / "tmp"),
+               TEMP=str(place / "tmp"))
     catalog, _digest = _opencode_catalog()
     env.update(OPENCODE_MODELS_PATH=str(catalog), OPENCODE_DISABLE_MODELS_FETCH="1")
     key = os.environ.get(variable)
@@ -1148,7 +1164,9 @@ def _finish_json(result, harness, model, prompt, call_option, role,
 # help, because they share the same credential.
 AUTH = re.compile(
     r"401|403|Authentication required|authentication (?:failed|timed out|cancelled)|"
-    r"Please visit the URL|oauth|sign ?in to continue", re.I)
+    r"Please visit the URL|oauth|sign ?in to continue|"
+    r"(?:incorrect|invalid) (?:x-)?api[ -]?key|invalid_api_key|authentication_error",
+    re.I)
 
 # "Authentication required" used to sit in CAPACITY too, so an expired
 # credential walked the entire chain -- every model of which shares it -- and

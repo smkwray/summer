@@ -140,6 +140,11 @@ for f in ${FILES[@]+"${FILES[@]}"}; do
   if hits="$(grep -niE "$run_narrative_pattern" "$f" 2>/dev/null)"; then
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
+      # The shipped OpenCode model catalog carries upstream release dates as
+      # data; OpenCode requires them. They are not development narratives.
+      if [[ "$f" == "src/models.json" ]] && [[ "$line" =~ ^[0-9]+:[[:space:]]*\"(release_date|last_updated|knowledge)\":[[:space:]]*\"[0-9]{4}-[0-9]{2}(-[0-9]{2})?\",?$ ]]; then
+        continue
+      fi
       fail_run_narratives+="${f}:${line}"$'\n'
     done <<< "$hits"
   fi

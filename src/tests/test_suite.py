@@ -2570,7 +2570,7 @@ class CapacityFailover(unittest.TestCase):
         process.assert_not_called()
 
     def test_codex_exhaustion_is_a_capacity_failure(self):
-        for msg in ("You've hit your usage limit for GPT-5.3-Codex-Spark.",
+        for msg in ("You've hit your usage limit for GPT-5.6-Luna.",
                     "You've hit your session limit · resets 7:50pm (America/New_York)",
                     "Switch to another model now, or try again at 12:39 PM."):
             self.assertTrue(self.ms.CAPACITY.search(msg), f"unmatched: {msg}")
@@ -2581,6 +2581,16 @@ class CapacityFailover(unittest.TestCase):
         msg = "agent loop failed: model failed: model stream idle timeout after 180000ms"
         self.assertTrue(self.ms.TRANSIENT.search(msg))
         self.assertFalse(self.ms.CAPACITY.search(msg))
+
+    def test_a_rejected_api_key_is_an_authentication_failure(self):
+        # Every model behind one key fails the same way; walking them wastes
+        # the target. These are the providers' own wordings.
+        for msg in ("Incorrect API key provided: sk-****0000.",
+                    "invalid x-api-key",
+                    '{"type":"error","error":{"type":"authentication_error"}}',
+                    "Error code: invalid_api_key"):
+            self.assertTrue(self.ms.AUTH.search(msg), msg)
+            self.assertFalse(self.ms.CAPACITY.search(msg), msg)
 
     def test_exhaustion_is_not_mistaken_for_an_auth_failure(self):
         # AUTH aborts the harness; capacity moves to the next model. Confusing
@@ -12082,6 +12092,13 @@ class OpenCodeTransport(unittest.TestCase):
         for provider, spec in config["_catalog"].items():
             self.assertEqual(provider, spec["id"])
             self.assertTrue(spec["npm"])
+            for model, record in spec["models"].items():
+                # OpenCode silently ignores a catalog whose records lack its
+                # required fields (2.2 requires release_date), so records
+                # stay verbatim upstream rather than hand-trimmed.
+                for field in ("id", "name", "release_date", "last_updated",
+                              "limit", "cost", "modalities", "reasoning"):
+                    self.assertIn(field, record, f"{provider}/{model}")
 
     @staticmethod
     def ambient_env(td):
@@ -12124,6 +12141,16 @@ class OpenCodeTransport(unittest.TestCase):
             "ComSpec": "C:\\Windows\\System32\\cmd.exe", "PATHEXT": ".COM;.EXE;.BAT;.CMD",
         }
 
+    def assert_neutral_place(self, env, wd):
+        # OpenCode tells the model its working, workspace and temporary
+        # directories: an empty private place, not the work root.
+        place = self.ms._opencode_place()
+        self.assertEqual(str(place), env["PWD"])
+        for variable in ("TMPDIR", "TMP", "TEMP"):
+            self.assertEqual(str(place / "tmp"), env[variable])
+        self.assertFalse(place.is_relative_to(wd))
+        self.assertEqual(["tmp"], sorted(p.name for p in place.iterdir()))
+
     def assert_private_env_absent(self, env):
         controlled = {"OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB",
                       "OPENCODE_MODELS_PATH"}
@@ -12165,7 +12192,11 @@ class OpenCodeTransport(unittest.TestCase):
             self.assertFalse(any(prompt in arg for arg in cmd))
             self.assertEqual("stdin", self.ms.NON_ARGV_TRANSPORT["opencode"])
             self.assertIn("opencode", self.ms.STDIN_HARNESSES)
-            self.assertEqual(wd / ".oc", self.ms.cli_cwd("opencode", wd))
+            # OpenCode reports its working directory to the model, so it is an
+            # empty place outside the work root and any repository around it.
+            self.assertEqual(self.ms._opencode_place(), self.ms.cli_cwd("opencode", wd))
+            self.assertFalse(self.ms.cli_cwd("opencode", wd).is_relative_to(wd))
+            self.ms._lean_dir(wd)
             cfg = json.loads((wd / ".oc" / "opencode.json").read_text())
             agent = cfg["agents"][self.ms.LEAN_AGENT]
             # A steps=1 cap injects an assistant prefill before the first call.
@@ -12204,11 +12235,11 @@ class OpenCodeTransport(unittest.TestCase):
                                  "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "SystemRoot",
                                  "WINDIR", "ComSpec", "PATHEXT"):
                     self.assertEqual(os.environ[variable], env[variable])
-                for variable in ("PWD", "HOME", "USERPROFILE", "XDG_DATA_HOME",
+                for variable in ("HOME", "USERPROFILE", "XDG_DATA_HOME",
                                  "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
-                                 "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR",
-                                 "OPENCODE_DB", "TMPDIR", "TMP", "TEMP"):
+                                 "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB"):
                     self.assertTrue(pathlib.Path(env[variable]).is_relative_to(wd))
+                self.assert_neutral_place(env, wd)
                 self.assertEqual("1", env["OPENCODE_CONFIG_PROJECT_DISABLE"])
             self.assertEqual(before, credential_rows(saved))
             for file in wd.rglob("*"):
@@ -12502,7 +12533,8 @@ class OpenCodeTransport(unittest.TestCase):
                 self.assertEqual(before, credential_rows(database))
             finally:
                 writer.close()
-            self.assertEqual([], list((pathlib.Path(td) / "logins").iterdir()))
+            self.assertEqual(["opencode"], sorted(
+                p.name for p in (pathlib.Path(td) / "logins").iterdir()))
         # A slow import that consumes the margin is refused before dispatch.
         with tempfile.TemporaryDirectory() as td:
             clock = [time.time(), 1500]
@@ -12529,7 +12561,8 @@ class OpenCodeTransport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with self.assertRaisesRegex(self.ms.AuthPreflight, "could not stage"):
                 self._oauth_env(td, [("vendor", self._login(48), 1)], imported=1)
-            self.assertEqual([], list((pathlib.Path(td) / "logins").iterdir()))
+            self.assertEqual(["opencode"], sorted(
+                p.name for p in (pathlib.Path(td) / "logins").iterdir()))
 
     def test_malformed_or_unqualified_saved_credentials_never_launch(self):
         for value in ("x", "[1]", {"type": "key", "key": ""},
@@ -12654,18 +12687,18 @@ class OpenCodeTransport(unittest.TestCase):
                                  "plan001", validate=json.loads)
             self.assertEqual('{"ok":true}', result)
             self.assertTrue(seen["input"].startswith("SOURCE BYTES"))
-            self.assertEqual(wd / ".oc", seen["cwd"])
+            self.assertEqual(self.ms._opencode_place(), seen["cwd"])
             env = seen["env"]
             self.assertEqual("selected-test-key", env["SUMM_TEST_OPENCODE_KEY"])
             self.assert_private_env_absent(env)
             for variable in ("PATH", "LANG", "HTTPS_PROXY", "http_proxy",
                              "SSL_CERT_FILE", "SystemRoot", "WINDIR", "ComSpec", "PATHEXT"):
                 self.assertEqual(os.environ[variable], env[variable])
-            for variable in ("PWD", "HOME", "USERPROFILE", "XDG_DATA_HOME",
+            for variable in ("HOME", "USERPROFILE", "XDG_DATA_HOME",
                              "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
-                             "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB",
-                             "TMPDIR", "TMP", "TEMP"):
+                             "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB"):
                 self.assertTrue(pathlib.Path(env[variable]).is_relative_to(wd))
+            self.assert_neutral_place(env, wd)
             self.assertEqual("1", env["OPENCODE_CONFIG_PROJECT_DISABLE"])
             rec = json.loads((wd / "calls.jsonl").read_text())
             self.assertEqual("test-digest", rec["opencode_catalog_sha256"])

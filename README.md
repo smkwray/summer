@@ -115,7 +115,10 @@ will not silently fall back to a cloud model.
 ## Privacy and reliability
 
 Summ'er supplies models with the text needed for the current task; it does not
-give them a path to the source document. Each run stages the original source
+give them a path to the source document. OpenCode itself adds the date, the
+platform, and its working and temporary directories to each request; Summer
+points those at an empty folder in a private temporary directory, whose path
+on Windows includes the account name. Each run stages the original source
 and its normalized text in a work directory. In ordinary batch mode, an
 implicit per-document work directory is removed after a successful summary or
 text-preparation run, but is retained for diagnosis when either mode fails or
