@@ -942,6 +942,7 @@ class App:
             self.profile.set("")
             self._set("Profile cannot run.", str(exc))
             return
+        retired = []
         for role, pair in sel.items():
             if role not in self.role_h:
                 continue
@@ -954,11 +955,14 @@ class App:
             if m in self.role_boxes[role]["values"]:
                 self.role_vars[role].set(m)
                 self.refresh_role_effort(role)
+            elif m:
+                retired.append(f"{role}: {h}:{m} -> "
+                               f"{self.role_h[role].get()}:{self.role_vars[role].get()}")
             if effort in self.role_effort_boxes[role]["values"]:
                 self.role_effort_vars[role].set(effort)
                 self.refresh_effort(role)
-            # A model that models.json no longer lists is not silently kept:
-            # refresh_role has already fallen back to the roster's preference.
+            # A model that models.json no longer lists is not kept: refresh_role
+            # has already fallen back to the roster's preference, said below.
         fb = sel.get("_fallback")
         if not (isinstance(fb, (list, tuple)) and len(fb) >= 2):
             default_fb = profiles._default_fallback()
@@ -973,10 +977,17 @@ class App:
             if fm in self.backup_box["values"]:
                 self.backup_var.set(fm)
                 self.refresh_backup_effort()
+            elif fm:
+                retired.append(f"backup: {fh}:{fm} -> "
+                               f"{self.backup_h.get()}:{self.backup_var.get()}")
             if fe in self.backup_effort_box["values"]:
                 self.backup_effort.set(fe)
                 self.refresh_backup_effort(reset=False)
         self.update_models_summary()
+        if retired:
+            self._set(f"Profile names {len(retired)} retired model"
+                      f"{'' if len(retired) == 1 else 's'}; save it to keep "
+                      "the replacements.", "; ".join(retired))
         if remember:
             try:
                 save_last_profile(self.profile.get().strip())

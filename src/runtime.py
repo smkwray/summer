@@ -14,6 +14,7 @@ import os
 import pathlib
 import random
 import re
+import shutil
 import sys
 import threading
 import time
@@ -369,6 +370,20 @@ def app_dir() -> pathlib.Path:
     else:
         base = pathlib.Path.home() / "Library/Application Support"
     return base / "summer"
+
+
+# OpenCode stores holding a borrowed subscription access token, under a run's
+# `.oc` directory. Each worker deletes its own at exit; a killed worker cannot.
+STAGED_LOGIN_PREFIX = "oauth-"
+
+
+def drop_staged_logins(root: pathlib.Path) -> int:
+    """Delete borrowed logins from a kept work root once its workers stopped."""
+    stores = [path for oc in pathlib.Path(root).rglob(".oc") if oc.is_dir()
+              for path in oc.glob(f"{STAGED_LOGIN_PREFIX}*") if path.is_dir()]
+    for path in stores:
+        shutil.rmtree(path, ignore_errors=True)
+    return len(stores)
 
 
 def atomic_text(path: pathlib.Path, value: str) -> None:

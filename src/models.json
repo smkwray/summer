@@ -26,12 +26,12 @@
     "fallback": [
       {
         "harness": "codex",
-        "model": "gpt-6-luna",
+        "model": "gpt-5.6-luna",
         "effort": "high"
       },
       {
         "harness": "codex",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "effort": "high"
       },
       {
@@ -144,21 +144,33 @@
       "openai": "OPENAI_API_KEY"
     },
     "_model_settings": {
-      "openai/gpt-5.3-codex-spark": {
+      "openai/gpt-5.6-luna": {
         "option": "variant",
         "values": [
           "none",
           "low",
           "medium",
           "high",
-          "xhigh"
+          "xhigh",
+          "max"
         ],
         "default": "high"
       },
-      "openai/gpt-5.6-luna": {
+      "openai/gpt-6-luna": {
         "option": "variant",
         "values": [
           "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "default": "high"
+      },
+      "openai/gpt-6.1-terra": {
+        "option": "variant",
+        "values": [
           "low",
           "medium",
           "high",
@@ -193,23 +205,27 @@
     "plan": [
       "anthropic/claude-sonnet-5-5",
       "anthropic/claude-opus-5-5",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.6-luna"
+      "openai/gpt-5.6-luna",
+      "openai/gpt-6-luna",
+      "openai/gpt-6.1-terra"
     ],
     "write": [
       "anthropic/claude-sonnet-5-5",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.6-luna"
+      "openai/gpt-5.6-luna",
+      "openai/gpt-6-luna",
+      "openai/gpt-6.1-terra"
     ],
     "audit": [
       "anthropic/claude-sonnet-5-5",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.6-luna"
+      "openai/gpt-5.6-luna",
+      "openai/gpt-6-luna",
+      "openai/gpt-6.1-terra"
     ],
     "repair": [
       "anthropic/claude-sonnet-5-5",
-      "openai/gpt-5.3-codex-spark",
-      "openai/gpt-5.6-luna"
+      "openai/gpt-5.6-luna",
+      "openai/gpt-6-luna",
+      "openai/gpt-6.1-terra"
     ]
   },
   "muse": {
@@ -261,22 +277,9 @@
   },
   "codex": {
     "_model_settings": {
-      "gpt-6-luna": {
-        "option": "effort",
-        "values": [
-          "none",
-          "low",
-          "medium",
-          "high",
-          "xhigh",
-          "max"
-        ],
-        "default": "high"
-      },
       "gpt-5.6-luna": {
         "option": "effort",
         "values": [
-          "none",
           "low",
           "medium",
           "high",
@@ -285,37 +288,48 @@
         ],
         "default": "high"
       },
-      "gpt-5.3-codex-spark": {
+      "gpt-6-luna": {
         "option": "effort",
         "values": [
-          "none",
           "low",
           "medium",
           "high",
-          "xhigh"
+          "xhigh",
+          "max"
+        ],
+        "default": "high"
+      },
+      "gpt-6.1-terra": {
+        "option": "effort",
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
         ],
         "default": "high"
       }
     },
     "plan": [
-      "gpt-6-luna",
       "gpt-5.6-luna",
-      "gpt-5.3-codex-spark"
+      "gpt-6-luna",
+      "gpt-6.1-terra"
     ],
     "write": [
-      "gpt-6-luna",
       "gpt-5.6-luna",
-      "gpt-5.3-codex-spark"
+      "gpt-6-luna",
+      "gpt-6.1-terra"
     ],
     "audit": [
-      "gpt-6-luna",
       "gpt-5.6-luna",
-      "gpt-5.3-codex-spark"
+      "gpt-6-luna",
+      "gpt-6.1-terra"
     ],
     "repair": [
-      "gpt-6-luna",
       "gpt-5.6-luna",
-      "gpt-5.3-codex-spark"
+      "gpt-6-luna",
+      "gpt-6.1-terra"
     ]
   },
   "grok": {

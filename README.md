@@ -66,8 +66,16 @@ Pipeline behavior does not depend on a particular model name.
 The shared default is `Opus Plan` through OpenCode and the Anthropic API:
 Opus plans, while Sonnet writes, reviews, and repairs. The desktop app remembers
 the last selected profile; a CLI invocation with
-no harness or profile uses the shared default. OpenCode v2 is required, with
-API-key authentication so sessions can stay inside the Summer work directory.
+no harness or profile uses the shared default. OpenCode v2 is required, and
+its sessions stay inside the Summer work directory. Each OpenCode route uses
+the provider's saved credential (`opencode auth login <provider>`) or its API-key
+environment variable. With a subscription login, such as ChatGPT for OpenAI,
+Summer copies only the short-lived access token, never the refresh token, into
+a private store that is deleted when the run's process exits. A login that
+would expire during a call stops the run; using OpenCode once with that
+provider, or logging in again, renews it. Each run also downloads the public
+[models.dev](https://models.dev) catalog once, so OpenCode recognizes models
+released after its own version; that copy stays in the work directory.
 OpenCode supplies native Anthropic prompt caching; Summer retains cache reads,
 cache writes, and reported cost in the run ledger. Reuse depends on an unchanged
 prompt prefix within the cache lifetime.
