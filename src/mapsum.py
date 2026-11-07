@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Shared model routing, gateway transport, retries, and call evidence."""
 from __future__ import annotations
-import atexit, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, pathlib
-import http.client, urllib.request
+import atexit, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, tempfile, threading, time, pathlib
 
 HERE = pathlib.Path(__file__).parent
 sys.path.insert(0, str(HERE))
@@ -361,18 +360,19 @@ def muse_env(workdir: pathlib.Path) -> dict:
 
     API keys override browser login. Remove that override in this child only,
     then ask the official CLI to verify the selected stored credential's live
-    allowance. A saved API key, expired login or missing subscription aborts
-    before a model turn; raw authentication diagnostics are never retained.
+    allowance. A saved API key, expired login or missing subscription retires
+    Muse before a model turn; raw authentication diagnostics are never retained.
     """
     env = {key: value for key, value in os.environ.items()
-           if key.upper() not in {"META_API_KEY", "MUSE_TRANSPORT_TRACE"}}
+           if key.upper() not in {"META_API_KEY", "MUSE_TRANSPORT_TRACE",
+                                  runtime.LOGIN_DIR_ENV}}
     try:
         result = subprocess.run(
             [MUSE, "usage", "--json"], cwd=run_root(workdir), env=env,
             capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
-        raise Abort("Muse subscription check did not complete; update Muse Code "
-                    "and check its browser login") from None
+        raise AuthPreflight("Muse subscription check did not complete; update "
+                            "Muse Code and check its browser login") from None
     try:
         status = json.loads(result.stdout)
         allowance = status["allowance"]
@@ -383,8 +383,9 @@ def muse_env(workdir: pathlib.Path) -> dict:
     except (ValueError, TypeError, KeyError):
         valid = False
     if not valid:
-        raise Abort("Muse requires an active Muse Code subscription and browser "
-                    "login for this model; API billing is not allowed")
+        raise AuthPreflight("Muse requires an active Muse Code subscription and "
+                            "browser login for this model; API billing is not "
+                            "allowed")
     return env
 
 
@@ -436,54 +437,89 @@ def _opencode_policy(model: str, workdir: pathlib.Path):
     return variable, credentials, inherited, controlled, directories
 
 
-OPENCODE_CATALOG_URL = "https://models.dev/api.json"
-_CATALOG_LOCK = threading.Lock()
-_CATALOG_MISSING: set = set()
+_LOGIN_LOCK = threading.Lock()
+_LOGIN_ROOT: list = []
+_CATALOGS: dict = {}
 
 
-def _opencode_catalog(d: pathlib.Path) -> pathlib.Path | None:
-    """Freeze one current public model catalog for this run's OpenCode calls.
+def _login_root() -> pathlib.Path:
+    """The disposable directory for credential-bearing OpenCode files.
 
-    A fresh OpenCode store knows only the catalog bundled with its release
-    until some call lives long enough to fetch a newer one, so its first call
-    to a model released since then fails as unavailable. Every run's store is
-    fresh. The frozen copy stays in the run directory as evidence.
+    The CLI controller creates one per invocation outside every work root and
+    deletes it after its workers stop. A direct caller gets its own, deleted
+    when the process exits.
     """
-    path = d / "models-catalog.json"
-    with _CATALOG_LOCK:
-        if path.exists():
-            return path
-        if str(d) in _CATALOG_MISSING:
-            return None
-        try:
-            # The catalog's CDN refuses Python's default client name.
-            request = urllib.request.Request(
-                OPENCODE_CATALOG_URL, headers={"User-Agent": "summer"})
-            with urllib.request.urlopen(request, timeout=30) as response:
-                body = response.read()
-            if not isinstance(json.loads(body), dict):
-                raise ValueError("catalog is not an object")
-        except (OSError, ValueError, http.client.HTTPException):
-            _CATALOG_MISSING.add(str(d))
-            print("    [opencode] current model catalog unavailable; OpenCode "
-                  "uses its bundled catalog, where newer models are unavailable",
-                  flush=True)
-            return None
-        partial = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        partial.write_bytes(body)
-        os.replace(partial, path)
-    return path
+    supplied = os.environ.get(runtime.LOGIN_DIR_ENV)
+    if supplied:
+        if not pathlib.Path(supplied).is_dir():
+            raise Abort("Summer's private login directory is missing")
+        return pathlib.Path(supplied)
+    with _LOGIN_LOCK:
+        if not _LOGIN_ROOT:
+            path = pathlib.Path(tempfile.mkdtemp(prefix="summer-logins-"))
+            _LOGIN_ROOT.append(path)
+            atexit.register(runtime.dispose_login_dir, path)
+        return _LOGIN_ROOT[0]
 
 
-# A borrowed subscription login must outlive the call that uses it.
-OAUTH_MARGIN_S = 300
+def _child_env() -> dict | None:
+    """Environment for a non-OpenCode CLI: everything but the login locator."""
+    if runtime.LOGIN_DIR_ENV not in os.environ:
+        return None
+    return {name: value for name, value in os.environ.items()
+            if name != runtime.LOGIN_DIR_ENV}
+
+
+def _opencode_catalog() -> tuple[pathlib.Path, str]:
+    """Write the release-frozen OpenCode model catalog from models.json.
+
+    A supplied catalog replaces OpenCode's own, including each provider's
+    endpoint and package, so it comes only from reviewed project bytes. A
+    fresh OpenCode store would otherwise know only the catalog bundled with
+    its release and refuse newer models on its first call.
+    """
+    catalog = (_model_config().get("opencode") or {}).get("_catalog")
+    if not isinstance(catalog, dict) or not catalog:
+        raise Abort("OpenCode: models.json declares no model catalog")
+    body = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(body).hexdigest()
+    root = _login_root()
+    with _LOGIN_LOCK:
+        path = _CATALOGS.get((str(root), digest))
+        if path is None:
+            path = root / f"opencode-catalog-{digest[:16]}.json"
+            partial = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            partial.write_bytes(body)
+            os.replace(partial, path)
+            _CATALOGS[(str(root), digest)] = path
+    return path, digest
+
+
+# Every credential this process gave OpenCode. Provider errors can echo one,
+# so streams are scrubbed before any evidence is written.
+_SECRETS: set = set()
+REDACTED = "[credential removed]"
+
+
+def _scrub(text: str) -> tuple[str, bool]:
+    """Remove every staged credential from `text`; report whether one was there."""
+    found = False
+    for secret in tuple(_SECRETS):
+        if secret and secret in text:
+            found = True
+            text = text.replace(secret, REDACTED)
+    return text, found
+
+
+# A borrowed subscription login must outlive the call and its session export.
+OAUTH_MARGIN_S = 600
 _OAUTH_STORES: dict = {}
 _OAUTH_RETIRED: list = []
 _OAUTH_LOCK = threading.Lock()
 
 
 def _drop_oauth_stores() -> None:
-    """Delete every run-local copy of a borrowed access token at exit."""
+    """Delete this process's staged logins at exit."""
     with _OAUTH_LOCK:
         stores = [path for path, _expires in _OAUTH_STORES.values()]
         stores += [path for path, _expires in _OAUTH_RETIRED]
@@ -496,132 +532,153 @@ def _drop_oauth_stores() -> None:
 atexit.register(_drop_oauth_stores)
 
 
-def _saved_credential(provider: str, env: dict, d: pathlib.Path,
-                      credential_data: pathlib.Path) -> dict:
-    """Return the active saved credential for `provider`, never its errors."""
-    # Only credential discovery can access the user's real data root.
-    # Config, compatibility directories and cwd remain run-local.
-    auth_env = dict(env, XDG_DATA_HOME=str(credential_data))
-    auth_env.pop("OPENCODE_DB")
+def _saved_credential(provider: str, variable: str) -> dict:
+    """Read the provider's saved OpenCode credential without starting OpenCode.
+
+    Starting OpenCode against the user's store can refresh, and so rotate, a
+    subscription login. A read-only connection only reads. Selection follows
+    OpenCode: the active credential first, then the newest.
+    """
+    data = pathlib.Path(os.environ.get("XDG_DATA_HOME")
+                        or pathlib.Path.home() / ".local" / "share").resolve()
+    database = data / "opencode" / "opencode.db"
+    custom = os.environ.get("OPENCODE_DB")
+    if custom and pathlib.Path(custom).expanduser().resolve() != database:
+        raise AuthPreflight(f"OpenCode {provider}: a custom OPENCODE_DB is not "
+                            f"supported for saved logins; set {variable} instead")
+    missing = (f"OpenCode {provider}: no saved credential; sign in with OpenCode "
+               f"v2 (`opencode auth login {provider}`) or set {variable}")
+    if not database.is_file():
+        raise AuthPreflight(missing)
     try:
-        result = subprocess.run(
-            [OPENCODE, "auth", "export", "--standalone", provider],
-            cwd=d, env=auth_env,
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
-            timeout=60)
-    except (subprocess.TimeoutExpired, OSError):
-        # A partial credential export can contain a key. Never let that
-        # exception reach the provider-call evidence recorder below.
-        raise Abort(f"OpenCode {provider}: credential export did not "
-                    "complete") from None
-    if result.returncode:
-        raise Abort(f"OpenCode {provider}: could not resolve its saved "
-                    "credential")
+        connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True,
+                                     timeout=10)
+        try:
+            row = connection.execute(
+                "SELECT id, label, value FROM credential WHERE integration_id = ? "
+                "ORDER BY active DESC, time_created DESC, id DESC LIMIT 1",
+                (provider,)).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        raise AuthPreflight(f"OpenCode {provider}: its credential store is "
+                            "unreadable or an unsupported version") from None
+    if row is None:
+        raise AuthPreflight(missing)
     try:
-        entries = json.loads(result.stdout)
-        selected = [entry for entry in entries
-                    if isinstance(entry, dict)
-                    and entry.get("integrationID") == provider
-                    and entry.get("active") is True]
+        value = json.loads(row[2])
     except (TypeError, ValueError):
-        raise Abort(f"OpenCode {provider}: invalid credential export") from None
-    entry = selected[0] if len(selected) == 1 else {}
-    if not isinstance(entry.get("value"), dict):
-        raise Abort(f"OpenCode {provider}: no usable saved credential")
-    return entry
+        value = None
+    if not isinstance(value, dict) or not isinstance(row[0], str) or not row[0]:
+        raise AuthPreflight(f"OpenCode {provider}: invalid saved credential")
+    return {"id": row[0], "label": row[1], "value": value}
 
 
-def _oauth_store(provider: str, entry: dict, env: dict, d: pathlib.Path,
+def _lifetime_ok(expires: float, min_valid_seconds: float) -> bool:
+    return expires - time.time() >= min_valid_seconds + OAUTH_MARGIN_S
+
+
+def _oauth_store(provider: str, entry: dict, env: dict, variable: str,
                  min_valid_seconds: float) -> tuple[pathlib.Path, float]:
-    """Copy only a subscription login's access token into a private store.
+    """Copy only a qualified subscription login's access token to a private store.
 
-    The refresh token is withheld: a copy that refreshed would rotate the
-    user's own login out from under it. The store is deleted at exit, or by
-    the CLI when it keeps a work root whose worker was killed.
+    The refresh token is withheld so the copy can never rotate the user's
+    own login, and only the method's required metadata is copied.
     """
     value = entry["value"]
+    methods = (((_model_config().get("opencode") or {}).get(
+        "_subscription_logins") or {}).get(provider) or {})
+    method = value.get("methodID")
+    required = methods.get(method) if isinstance(method, str) else None
+    if not isinstance(required, list):
+        raise AuthPreflight(f"OpenCode {provider}: its saved login method is not "
+                            f"supported; set {variable} instead")
+    metadata = value.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
     expires = value.get("expires")
     if (not isinstance(value.get("access"), str) or not value["access"]
-            or not isinstance(expires, (int, float)) or isinstance(expires, bool)):
-        raise Abort(f"OpenCode {provider}: invalid saved login")
-    expires = expires / 1000
-    if expires - time.time() < min_valid_seconds + OAUTH_MARGIN_S:
-        raise Abort(f"OpenCode {provider}: the saved login expires too soon "
-                    "for this call; refresh it by using OpenCode with this "
-                    f"provider once or run `opencode auth login {provider}`")
-    borrowed = dict(entry, value=dict(value, refresh=""))
-    store = pathlib.Path(tempfile.mkdtemp(
-        prefix=f"{runtime.STAGED_LOGIN_PREFIX}{provider}-", dir=d))
+            or type(expires) is not int or expires <= 0
+            or any(not isinstance(metadata.get(name), str) or not metadata[name]
+                   for name in required)):
+        raise AuthPreflight(f"OpenCode {provider}: invalid saved login")
+    if not _lifetime_ok(expires / 1000, min_valid_seconds):
+        raise AuthPreflight(f"OpenCode {provider}: the saved login expires too "
+                            "soon for this call; use OpenCode with this provider "
+                            f"once or sign in again (`opencode auth login {provider}`)")
+    record = {"id": entry["id"], "integrationID": provider,
+              "label": entry.get("label") or provider, "active": True,
+              "value": {"type": "oauth", "methodID": method,
+                        "access": value["access"], "refresh": "",
+                        "expires": expires,
+                        "metadata": {name: metadata[name] for name in required}}}
+    store = pathlib.Path(tempfile.mkdtemp(prefix=f"{provider}-", dir=_login_root()))
     try:
         result = subprocess.run(
             [OPENCODE, "auth", "import", "--standalone"],
-            cwd=d, env=dict(env, XDG_DATA_HOME=str(store),
-                            OPENCODE_DB=str(store / "opencode" / "opencode.db")),
-            input=json.dumps([borrowed]), capture_output=True, text=True,
+            cwd=env["PWD"], env=dict(env, XDG_DATA_HOME=str(store),
+                                     OPENCODE_DB=str(store / "opencode" / "opencode.db")),
+            input=json.dumps([record]), capture_output=True, text=True,
             timeout=60)
         imported = result.returncode == 0
     except (subprocess.TimeoutExpired, OSError):
         imported = False
     if not imported:
         shutil.rmtree(store, ignore_errors=True)
-        raise Abort(f"OpenCode {provider}: could not stage its saved login")
-    return store, expires
+        raise AuthPreflight(f"OpenCode {provider}: could not stage its saved login")
+    return store, expires / 1000
 
 
 def opencode_env(model: str, workdir: pathlib.Path,
                  min_valid_seconds: float = 0) -> dict:
-    """Isolate sessions under this run; never copy a reusable credential.
+    """Isolate sessions; never copy a reusable credential or start the user's store.
 
-    OpenCode stores credentials and transcripts in one database. Export only
-    this provider's selected credential through its supported CLI. An API key
-    travels as an environment variable to an otherwise empty private store.
-    A subscription login's short-lived access token, without its refresh
-    token, is imported into a run-local store deleted when the process exits.
+    An API key, from the environment or the saved store, travels only as an
+    environment variable. A subscription login's access token, without its
+    refresh token, is imported into a store in the disposable login directory.
     Only ordinary launch, locale, proxy and certificate settings are inherited;
-    private Summer state and unrelated secrets never reach either subprocess.
+    private Summer state and unrelated secrets never reach the child.
     """
     variable, credentials, inherited, controlled, directories = _opencode_policy(model, workdir)
     provider = model.split("/", 1)[0]
-    key = os.environ.get(variable)
-    # Resolve the user's database root before replacing home. OpenCode uses
-    # this XDG default on both platforms; no inherited database override applies.
-    if not key:
-        credential_data = pathlib.Path(
-            os.environ.get("XDG_DATA_HOME")
-            or pathlib.Path.home() / ".local" / "share").resolve()
     env = {name: value for name, value in os.environ.items()
            if name.upper() in inherited and name.upper() not in credentials}
-    d = _lean_dir(workdir)
+    _lean_dir(workdir)
     for path in set(directories.values()):
         path.mkdir(exist_ok=True)
     env.update(controlled)
-    catalog = _opencode_catalog(d)
-    if catalog:
-        env.update(OPENCODE_MODELS_PATH=str(catalog),
-                   OPENCODE_DISABLE_MODELS_FETCH="1")
-    if key:
-        env[variable] = key
-        return env
-    slot = (str(d), provider)
+    catalog, _digest = _opencode_catalog()
+    env.update(OPENCODE_MODELS_PATH=str(catalog), OPENCODE_DISABLE_MODELS_FETCH="1")
+    key = os.environ.get(variable)
     with _OAUTH_LOCK:
-        store = _OAUTH_STORES.get(slot)
-        if store and store[1] - time.time() < min_valid_seconds + OAUTH_MARGIN_S:
-            # Calls in flight may still use it; it is deleted at exit.
-            _OAUTH_RETIRED.append(_OAUTH_STORES.pop(slot))
+        if key:
+            _SECRETS.add(key)
+            env[variable] = key
+            return env
+        store = _OAUTH_STORES.get(provider)
+        if store and not _lifetime_ok(store[1], min_valid_seconds):
+            # A call or session export in flight may still use it.
+            _OAUTH_RETIRED.append(_OAUTH_STORES.pop(provider))
             store = None
         if store is None:
-            entry = _saved_credential(provider, env, d, credential_data)
+            entry = _saved_credential(provider, variable)
             value = entry["value"]
             if value.get("type") == "key":
                 if not isinstance(value.get("key"), str) or not value["key"]:
-                    raise Abort(f"OpenCode {provider}: invalid saved API key")
+                    raise AuthPreflight(f"OpenCode {provider}: invalid saved API key")
+                _SECRETS.add(value["key"])
                 env[variable] = value["key"]
                 return env
             if value.get("type") != "oauth":
-                raise Abort(f"OpenCode {provider}: the saved credential is "
-                            "neither an API key nor a subscription login")
-            store = _OAUTH_STORES[slot] = _oauth_store(
-                provider, entry, env, d, min_valid_seconds)
+                raise AuthPreflight(f"OpenCode {provider}: the saved credential is "
+                                    "neither an API key nor a subscription login")
+            store = _oauth_store(provider, entry, env, variable, min_valid_seconds)
+            _OAUTH_STORES[provider] = store
+            _SECRETS.add(value["access"])
+        # Staging can take a minute; check again immediately before dispatch.
+        if not _lifetime_ok(store[1], min_valid_seconds):
+            raise AuthPreflight(f"OpenCode {provider}: the saved login expires too "
+                                "soon for this call; use OpenCode with this provider "
+                                f"once or sign in again (`opencode auth login {provider}`)")
     env.update(XDG_DATA_HOME=str(store[0]),
                OPENCODE_DB=str(store[0] / "opencode" / "opencode.db"))
     return env
@@ -916,6 +973,15 @@ AUDIT_MODELS, REPAIR_MODELS = _R["audit"], _R["repair"]
 
 class Abort(RuntimeError):
     pass
+
+
+class AuthPreflight(Abort):
+    """A route's credential is missing, unsupported or about to expire.
+
+    Raised before any model turn with a message that carries no secret. Like
+    an authentication failure a CLI reports, it retires that harness for the
+    target and lets a different harness in the chain answer.
+    """
 
 
 class NoCandidate(Abort):
@@ -1509,19 +1575,42 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                                     [harness, model], 1, "", str(ge))
                                 break
                     else:
-                        child_env = (opencode_env(model, workdir, attempt_timeout)
-                                     if harness == "opencode" else
-                                     muse_env(workdir)
-                                     if harness == "muse" else None)
-                        model_config.require_enabled(harness)
-                        r = subprocess.run(
-                            _cmd(harness, model, workdir, prompt, option,
-                                 timeout_seconds=attempt_timeout),
-                            cwd=cli_cwd(harness, workdir),
-                            capture_output=True, text=True, timeout=attempt_timeout,
-                            **({"env": child_env} if child_env is not None else {}),
-                            **({"input": prompt} if on_stdin
-                               else {"stdin": subprocess.DEVNULL}))
+                        try:
+                            child_env = (opencode_env(model, workdir, attempt_timeout)
+                                         if harness == "opencode" else
+                                         muse_env(workdir)
+                                         if harness == "muse" else _child_env())
+                        except AuthPreflight as exc:
+                            # Same handling as a CLI's own authentication
+                            # failure: retire this harness, try the next one.
+                            child_env = None
+                            gateway_kind = "auth"
+                            r = subprocess.CompletedProcess(
+                                [harness, model], 1, "", str(exc))
+                        else:
+                            if (child_env or {}).get("OPENCODE_MODELS_PATH"):
+                                rec["opencode_catalog_sha256"] = _opencode_catalog()[1]
+                            model_config.require_enabled(harness)
+                            r = subprocess.run(
+                                _cmd(harness, model, workdir, prompt, option,
+                                     timeout_seconds=attempt_timeout),
+                                cwd=cli_cwd(harness, workdir),
+                                capture_output=True, text=True, timeout=attempt_timeout,
+                                **({"env": child_env} if child_env is not None else {}),
+                                **({"input": prompt} if on_stdin
+                                   else {"stdin": subprocess.DEVNULL}))
+                            out, _ = _scrub(r.stdout or "")
+                            err, _ = _scrub(r.stderr or "")
+                            if out != (r.stdout or ""):
+                                # Never keep or publish an answer carrying a
+                                # credential, nor the credential itself.
+                                gateway_kind = "unusable"
+                                r = subprocess.CompletedProcess(
+                                    r.args, 1, "", "the CLI output contained a "
+                                    "staged credential and was discarded")
+                            else:
+                                r = subprocess.CompletedProcess(
+                                    r.args, r.returncode, out, err)
             except subprocess.TimeoutExpired as exc:
                 # A timed-out process may already have written part of an
                 # answer. Keep it as evidence, and never replay a summary
@@ -1530,6 +1619,8 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                     exc.stdout.decode("utf-8", "replace") if exc.stdout else "")
                 partial_err = exc.stderr if isinstance(exc.stderr, str) else (
                     exc.stderr.decode("utf-8", "replace") if exc.stderr else "")
+                partial_out, _ = _scrub(partial_out)
+                partial_err, _ = _scrub(partial_err)
                 (workdir / f"{attempt_prefix}.stdout.txt").write_text(partial_out)
                 (workdir / f"{attempt_prefix}.stderr.txt").write_text(partial_err)
                 rec.update(stdout_bytes=len(partial_out.encode()),
@@ -1736,8 +1827,9 @@ def run(prompt: str, workdir: pathlib.Path, chain, stage: str, validate=None,
                 dead.add(harness)
                 if all(h in dead for h, _ in resolved[mi + 1:]):
                     raise Abort(f"{stage}: {harness}:{model} needs authentication "
-                                f"and no later chain entry uses a different "
-                                f"harness, so falling through cannot help")
+                                f"({last[:200]}) and no later chain entry uses "
+                                f"a different harness, so falling through "
+                                f"cannot help")
                 print(f"    [{stage}] {harness} needs authentication — "
                       f"skipping its remaining models", flush=True)
                 advance = True

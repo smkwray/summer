@@ -961,6 +961,9 @@ class App:
             if effort in self.role_effort_boxes[role]["values"]:
                 self.role_effort_vars[role].set(effort)
                 self.refresh_effort(role)
+            elif effort and self.role_effort_vars[role].get() != effort:
+                retired.append(f"{role} setting: {effort} -> "
+                               f"{self.role_effort_vars[role].get() or 'none'}")
             # A model that models.json no longer lists is not kept: refresh_role
             # has already fallen back to the roster's preference, said below.
         fb = sel.get("_fallback")
@@ -983,9 +986,12 @@ class App:
             if fe in self.backup_effort_box["values"]:
                 self.backup_effort.set(fe)
                 self.refresh_backup_effort(reset=False)
+            elif fe and self.backup_effort.get() != fe:
+                retired.append(f"backup setting: {fe} -> "
+                               f"{self.backup_effort.get() or 'none'}")
         self.update_models_summary()
         if retired:
-            self._set(f"Profile names {len(retired)} retired model"
+            self._set(f"Profile names {len(retired)} retired choice"
                       f"{'' if len(retired) == 1 else 's'}; save it to keep "
                       "the replacements.", "; ".join(retired))
         if remember:

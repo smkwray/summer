@@ -2535,6 +2535,40 @@ class CapacityFailover(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_preflight_auth_reaches_other_harness(self):
+        # A login that is missing or about to expire is a harness-level
+        # authentication failure: the next harness answers, and the ledger
+        # says why the first one never ran.
+        message = ("OpenCode vendor: the saved login expires too soon for this "
+                   "call; use OpenCode with this provider once or sign in again")
+        self.assertFalse(self.ms._capacity_signal("", message))
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms, "opencode_env",
+                                           side_effect=self.ms.AuthPreflight(message)), \
+                unittest.mock.patch.object(self.ms, "_opencode_policy", return_value=()), \
+                unittest.mock.patch.object(self.ms.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, '{"ok":true}', "")) as process, \
+                contextlib.redirect_stdout(io.StringIO()):
+            wd = pathlib.Path(td)
+            self.assertEqual('{"ok":true}', self.ms.run(
+                "p", wd, ["opencode:vendor/model", "codex:example"], "plan001",
+                validate=json.loads))
+            self.assertEqual(1, process.call_count)
+            self.assertEqual(self.ms.CODEX, process.call_args.args[0][0])
+            records = [json.loads(line) for line in
+                       (wd / "calls.jsonl").read_text().splitlines()]
+            self.assertEqual([("opencode", "auth"), ("codex", "ok")],
+                             [(r["harness"], r["outcome"]) for r in records])
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.ms, "opencode_env",
+                                           side_effect=self.ms.AuthPreflight(message)), \
+                unittest.mock.patch.object(self.ms, "_opencode_policy", return_value=()), \
+                unittest.mock.patch.object(self.ms.subprocess, "run") as process, \
+                contextlib.redirect_stdout(io.StringIO()), \
+                self.assertRaisesRegex(self.ms.Abort, "expires too soon"):
+            self.ms.run("p", pathlib.Path(td), ["opencode:vendor/model"], "plan001")
+        process.assert_not_called()
+
     def test_codex_exhaustion_is_a_capacity_failure(self):
         for msg in ("You've hit your usage limit for GPT-5.3-Codex-Spark.",
                     "You've hit your session limit · resets 7:50pm (America/New_York)",
@@ -3589,40 +3623,69 @@ class StageExitCodesReachTheCaller(unittest.TestCase):
         self.assertIn("SystemExit(2)", (ENG / "compose.py").read_text())
 
 
-class KeptWorkHoldsNoBorrowedLogin(unittest.TestCase):
-    """A cancelled worker is killed before its exit hook can delete a staged
-    subscription login, so the CLI removes it before keeping the work root."""
+class ControllerOwnsTheLoginDirectory(unittest.TestCase):
+    """Staged subscription logins live in one private directory per CLI
+    invocation, outside every work root, and only that directory is deleted:
+    cancelled workers are killed before their own exit hooks can run."""
     rt = load("runtime")
-    ms = load("mapsum")
 
-    def test_staged_logins_are_removed_and_run_evidence_kept(self):
+    def test_owned_cleanup(self):
         with tempfile.TemporaryDirectory() as td:
-            root = pathlib.Path(td)
-            oc = root / "target" / "run" / ".oc"
-            staged = oc / f"{self.rt.STAGED_LOGIN_PREFIX}openai-abc" / "opencode"
-            staged.mkdir(parents=True)
-            (staged / "opencode.db").write_text("credential")
-            (oc / "data").mkdir()
-            (oc / "models-catalog.json").write_text("{}")
-            (root / "target" / "run" / "calls.jsonl").write_text("{}\n")
-            self.assertEqual(1, self.rt.drop_staged_logins(root))
-            self.assertEqual([], list(oc.glob("oauth-*")))
-            self.assertTrue((oc / "data").is_dir())
-            self.assertTrue((oc / "models-catalog.json").exists())
-            self.assertTrue((root / "target" / "run" / "calls.jsonl").exists())
+            outside = pathlib.Path(td) / "outside"
+            outside.mkdir()
+            (outside / "valuable").write_text("keep")
+            with self.rt.login_dir() as first, self.rt.login_dir() as second:
+                self.assertEqual(str(second), os.environ[self.rt.LOGIN_DIR_ENV])
+                self.assertEqual(0o700, first.stat().st_mode & 0o777) \
+                    if os.name == "posix" else None
+                # A killed worker leaves its staged store behind.
+                (second / "openai-abc" / "opencode").mkdir(parents=True)
+                (second / "openai-abc" / "opencode" / "opencode.db").write_text("token")
+                link = second / "link"
+                try:
+                    link.symlink_to(outside, target_is_directory=True)
+                except (OSError, NotImplementedError):
+                    pass
+                (first / "openai-def").mkdir()
+            self.assertFalse(second.exists())
+            self.assertFalse(first.exists())
+            self.assertEqual("keep", (outside / "valuable").read_text())
+            self.assertNotIn(self.rt.LOGIN_DIR_ENV, os.environ)
 
-    def test_the_staging_and_sweeping_names_are_one_fact(self):
-        src = (ENG / "mapsum.py").read_text()
-        self.assertIn("prefix=f\"{runtime.STAGED_LOGIN_PREFIX}{provider}-\"", src)
+    def test_a_sharing_violation_is_retried_then_reported(self):
+        real = shutil.rmtree
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "logins"
+            target.mkdir()
+            failures = [2]
 
-    def test_every_kept_work_root_is_swept_first(self):
+            def flaky(path, ignore_errors=False):
+                if failures[0]:
+                    failures[0] -= 1
+                    return None
+                return real(path, ignore_errors=ignore_errors)
+            with unittest.mock.patch.object(self.rt.shutil, "rmtree", flaky), \
+                    unittest.mock.patch.object(self.rt.time, "sleep"):
+                self.assertIsNone(self.rt.dispose_login_dir(target))
+            self.assertFalse(target.exists())
+            target.mkdir()
+            with unittest.mock.patch.object(self.rt.shutil, "rmtree"), \
+                    unittest.mock.patch.object(self.rt.time, "sleep"):
+                problem = self.rt.dispose_login_dir(target)
+            self.assertIn("could not be removed", problem)
+
+    def test_the_cli_entry_point_owns_one_directory_and_never_sweeps_work(self):
         src = (ENG / "summ_cli.py").read_text()
-        kept = [m.start() for m in re.finditer(r'print\(f"  work kept:', src)]
-        self.assertTrue(kept)
-        for at in kept:
-            self.assertIn("runtime.drop_staged_logins(tmp)", src[at - 120:at])
-        corpus = src[src.index("return do_corpus("):]
-        self.assertIn("runtime.drop_staged_logins(corpus_root)", corpus[:600])
+        self.assertIn("with runtime.login_dir():\n        code = main()", src)
+        self.assertNotIn("drop_staged_logins", src)
+        self.assertNotIn("rglob(\".oc\")", (ENG / "runtime.py").read_text())
+
+    def test_model_clis_never_receive_the_login_locator(self):
+        ms = load("mapsum")
+        with unittest.mock.patch.dict(os.environ, {self.rt.LOGIN_DIR_ENV: "/x"}):
+            self.assertNotIn(self.rt.LOGIN_DIR_ENV, ms._child_env())
+        with unittest.mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(ms._child_env())
 
 
 class WorkDirGovernsReadAloudToo(unittest.TestCase):
@@ -9854,6 +9917,50 @@ class CorpusIntegrityContract(unittest.TestCase):
         self.assertTrue(sealed["passed"], sealed)
         return work
 
+    def test_seal_after_oauth_cleanup(self):
+        # A staged login used during a Corpus run must not sit in its sealed
+        # evidence; disposing of it afterwards must leave the seal intact.
+        ms = load("mapsum")
+        rt = load("runtime")
+        staged = []
+        base = self.FakeRunner
+
+        class StagingRunner(base):
+            def run(inner, prompt, workdir, chain, stage, validate=None,
+                    gateway_options=None, role=None):
+                staged.append(ms.opencode_env("vendor/model", pathlib.Path(workdir)))
+                return base.run(inner, prompt, workdir, chain, stage, validate,
+                                gateway_options, role)
+
+        login = {"type": "oauth", "methodID": "vendor-headless", "access": "a",
+                 "refresh": "r", "expires": int((time.time() + 86400) * 1000),
+                 "metadata": {"accountID": "x"}}
+        config = {"opencode": {"_credential_envs": {"vendor": "SUMM_TEST_OPENCODE_KEY"},
+                               "_subscription_logins": {"vendor": {"vendor-headless": ["accountID"]}},
+                               "_catalog": {"vendor": {"id": "vendor", "npm": "x", "models": {}}}}}
+
+        def import_login(argv, **kw):
+            store = pathlib.Path(kw["env"]["OPENCODE_DB"])
+            store.parent.mkdir(parents=True, exist_ok=True)
+            store.write_text("staged credential")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with tempfile.TemporaryDirectory() as td:
+            saved_opencode_store(pathlib.Path(td) / "saved", [("vendor", login, 1)])
+            with unittest.mock.patch.dict(os.environ, {
+                        "XDG_DATA_HOME": str(pathlib.Path(td) / "saved")}), \
+                    unittest.mock.patch.object(ms, "_model_config", return_value=config), \
+                    unittest.mock.patch.object(ms.subprocess, "run", import_login), \
+                    unittest.mock.patch.object(self, "FakeRunner", StagingRunner), \
+                    rt.login_dir() as logins:
+                (pathlib.Path(td) / "corpus-run").mkdir()
+                work = self._sealed_run(pathlib.Path(td) / "corpus-run")
+                self.assertTrue(staged)
+                stores = {pathlib.Path(env["XDG_DATA_HOME"]) for env in staged}
+                self.assertTrue(all(store.parent == logins for store in stores))
+                ms._drop_oauth_stores()
+            self.assertFalse(logins.exists())
+            self.assertTrue(self.seal.seal(work)["passed"])
+
     def test_a_clean_run_seals_and_reports_both_statuses(self):
         with tempfile.TemporaryDirectory() as td:
             work = self._sealed_run(pathlib.Path(td))
@@ -10141,6 +10248,17 @@ class ModelsAreChosenInTheWindowWithoutNamingAnyHere(unittest.TestCase):
     def local_gateway(self):
         return unittest.mock.patch.object(
             self.ui.runtime, "config", return_value=gateway_runtime())
+
+    def test_headless_retired_effort(self):
+        # The CLI path must refuse a setting the model no longer offers
+        # instead of handing it to the model CLI or replacing it silently.
+        for picks, fallback in (({"plan": ("codex", "gpt-5.6-luna", "none")}, None),
+                                ({"plan": ("codex", "gpt-5.6-luna", "high")},
+                                 ("codex", "gpt-6-luna", "none"))):
+            with self.subTest(picks=picks, fallback=fallback), \
+                    self.assertRaisesRegex(self.ui.runtime.ConfigError,
+                                           "no longer offers effort 'none'.*low"):
+                self.ui.role_env("codex", picks, fallback)
 
     def test_summ_ui_names_no_model(self):
         src = (ENG / "summ_ui.py").read_text()
@@ -10593,10 +10711,24 @@ class ProfilesAndAStableWindow(unittest.TestCase):
         self.assertNotEqual(self.app.role_vars["plan"].get(), "gone/removed-model")
         # The substitution is disclosed: a run must not quietly use a model
         # other than the one the saved profile names.
-        self.assertIn("4 retired models", self.app.status.cget("text"))
+        self.assertIn("4 retired choices", self.app.status.cget("text"))
         self.assertIn("plan: opencode:gone/removed-model -> opencode:"
                       f"{self.app.role_vars['plan'].get()}",
                       self.app.detail.cget("text"))
+
+    def test_profile_discloses_removed_effort(self):
+        # A saved setting the model no longer offers is replaced visibly.
+        self.ui.save_profiles({"old": {
+            "plan": ["codex", "gpt-5.6-luna", "none"],
+            "_fallback": ["codex", "gpt-5.6-luna", "none"]}})
+        self.app.profile_box["values"] = ["old"]
+        self.app.profile.set("old"); self.app.apply_profile()
+        self.assertEqual("gpt-5.6-luna", self.app.role_vars["plan"].get())
+        self.assertNotEqual("none", self.app.role_effort_vars["plan"].get())
+        self.assertIn("2 retired choices", self.app.status.cget("text"))
+        detail = self.app.detail.cget("text")
+        self.assertIn("plan setting: none -> ", detail)
+        self.assertIn("backup setting: none -> ", detail)
 
     def test_profiles_are_device_local_not_project_state(self):
         # A preference is not project state and must not reach the repo.
@@ -11832,57 +11964,124 @@ sys.exit(status)
                 self.assertIn("mapsum.py:_default_agy_binary", observed["calls"])
 
 
+CREDENTIAL_SCHEMA = """CREATE TABLE `credential` (
+          `id` text PRIMARY KEY,
+          `integration_id` text,
+          `label` text NOT NULL,
+          `value` text NOT NULL,
+          `connector_id` text,
+          `method_id` text,
+          `active` integer,
+          `time_created` integer NOT NULL,
+          `time_updated` integer NOT NULL
+        )"""
+
+
+def saved_opencode_store(data_root, rows, keep_open=False):
+    """An OpenCode v2 credential store in WAL mode, as `opencode auth` leaves it.
+
+    Each row is (integration, value, active); a str value is stored verbatim.
+    """
+    import sqlite3
+    database = pathlib.Path(data_root) / "opencode" / "opencode.db"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute(CREDENTIAL_SCHEMA)
+    for index, (integration, value, active) in enumerate(rows):
+        raw = value if isinstance(value, str) else json.dumps(value)
+        method = value.get("methodID") if isinstance(value, dict) else None
+        connection.execute(
+            "INSERT INTO credential VALUES (?,?,?,?,?,?,?,?,?)",
+            (f"cred_{index}", integration, f"label {index}", raw, None, method,
+             active, 1000 + index, 1000 + index))
+    connection.commit()
+    if keep_open:
+        return database, connection
+    connection.close()
+    return database
+
+
+# A valid empty runtime snapshot: tests that clear the environment must not
+# fall back to the device's own runtime file, which on Windows cannot even be
+# located without a profile directory.
+EMPTY_RUNTIME = json.dumps({"active_targets": 2, "harness_capacity": 1,
+                            "capacities": {}, "bindings": {}, "gateways": {}})
+
+
+def credential_rows(database):
+    import sqlite3
+    connection = sqlite3.connect(database)
+    try:
+        return connection.execute("SELECT * FROM credential ORDER BY id").fetchall()
+    finally:
+        connection.close()
+
+
 class OpenCodeTransport(unittest.TestCase):
     ms = load("mapsum")
 
     def setUp(self):
-        # Offline: the public catalog download has its own tests below.
+        # The frozen catalog has its own tests below; elsewhere it is a stub.
+        root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, True)
+        self.catalog_path = root / "catalog.json"
+        self.catalog_path.write_text("{}")
         self.catalog = unittest.mock.patch.object(
-            self.ms, "_opencode_catalog", return_value=None)
+            self.ms, "_opencode_catalog",
+            return_value=(self.catalog_path, "test-digest"))
         self.catalog.start()
         self.addCleanup(self.catalog.stop)
+        self.addCleanup(self.ms._drop_oauth_stores)
 
-    def test_every_run_freezes_a_current_catalog_once_for_its_opencode_calls(self):
-        # OpenCode's bundled catalog predates newer models; a fresh run store
-        # would refuse them on its first call without a current catalog.
+    def test_catalog_is_reviewed_project_bytes_offline_and_recorded(self):
+        # A supplied catalog replaces OpenCode's own, endpoints included, so a
+        # planted file or a download must never become routing configuration.
         self.catalog.stop()
-        body = json.dumps({"vendor": {"models": {"model": {}}}}).encode()
-        response = unittest.mock.MagicMock()
-        response.__enter__.return_value.read.return_value = body
+        catalog = {"vendor": {"id": "vendor", "npm": "@ai-sdk/vendor",
+                              "models": {"model": {"id": "model"}}}}
+        body = json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode()
+        digest = hashlib.sha256(body).hexdigest()
+        hostile = b'{"vendor":{"api":"https://attacker.example","models":{"model":{}}}}'
         config = {"opencode": {"_credential_envs": {
-            "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
+            "vendor": "SUMM_TEST_OPENCODE_KEY"}, "_catalog": catalog}}
+        with tempfile.TemporaryDirectory() as td:
+            wd, logins = pathlib.Path(td) / "work", pathlib.Path(td) / "logins"
+            (wd / ".oc").mkdir(parents=True); logins.mkdir()
+            (wd / ".oc" / "models-catalog.json").write_bytes(hostile)
+            (logins / f"opencode-catalog-{digest[:16]}.json").write_bytes(hostile)
+            with unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                    unittest.mock.patch.dict(os.environ, {
+                        "SUMM_TEST_OPENCODE_KEY": "test-only-key",
+                        "SUMM_RUNTIME_JSON": EMPTY_RUNTIME,
+                        "SUMM_LOGIN_DIR": str(logins)}, clear=True):
+                env = self.ms.opencode_env("vendor/model", wd)
+                self.assertEqual(digest, self.ms._opencode_catalog()[1])
+            self.assertEqual(body, pathlib.Path(env["OPENCODE_MODELS_PATH"]).read_bytes())
+            self.assertEqual(logins, pathlib.Path(env["OPENCODE_MODELS_PATH"]).parent)
+            self.assertEqual("1", env["OPENCODE_DISABLE_MODELS_FETCH"])
+        self.assertFalse(hasattr(self.ms, "urllib"), "the catalog is never downloaded")
         with tempfile.TemporaryDirectory() as td, \
-                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                unittest.mock.patch.object(self.ms, "_model_config", return_value={
+                    "opencode": {"_credential_envs": {"vendor": "SUMM_TEST_OPENCODE_KEY"}}}), \
                 unittest.mock.patch.dict(os.environ, {
-                    "SUMM_TEST_OPENCODE_KEY": "test-only-key"}, clear=True), \
-                unittest.mock.patch.object(self.ms.urllib.request, "urlopen",
-                                           return_value=response) as fetch:
-            first = self.ms.opencode_env("vendor/model", pathlib.Path(td))
-            second = self.ms.opencode_env("vendor/model", pathlib.Path(td))
-            catalog = pathlib.Path(first["OPENCODE_MODELS_PATH"])
-            self.assertEqual(body, catalog.read_bytes())
-            self.assertEqual(pathlib.Path(td).resolve() / ".oc", catalog.parent)
-            self.assertEqual("1", first["OPENCODE_DISABLE_MODELS_FETCH"])
-            self.assertEqual(first["OPENCODE_MODELS_PATH"], second["OPENCODE_MODELS_PATH"])
-            self.assertEqual(1, fetch.call_count)
+                    "SUMM_TEST_OPENCODE_KEY": "test-only-key",
+                    "SUMM_RUNTIME_JSON": EMPTY_RUNTIME}, clear=True), \
+                self.assertRaisesRegex(self.ms.Abort, "no model catalog"):
+            self.ms.opencode_env("vendor/model", pathlib.Path(td))
 
-    def test_an_unavailable_catalog_is_said_once_and_leaves_opencode_default(self):
-        self.catalog.stop()
-        config = {"opencode": {"_credential_envs": {
-            "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
-        with tempfile.TemporaryDirectory() as td, \
-                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
-                unittest.mock.patch.dict(os.environ, {
-                    "SUMM_TEST_OPENCODE_KEY": "test-only-key"}, clear=True), \
-                unittest.mock.patch.object(self.ms.urllib.request, "urlopen",
-                                           side_effect=OSError("offline")) as fetch, \
-                contextlib.redirect_stdout(io.StringIO()) as said:
-            for _ in range(2):
-                env = self.ms.opencode_env("vendor/model", pathlib.Path(td))
-                self.assertNotIn("OPENCODE_MODELS_PATH", env)
-                self.assertNotIn("OPENCODE_DISABLE_MODELS_FETCH", env)
-            self.assertEqual(1, fetch.call_count)
-            self.assertEqual(1, said.getvalue().count("catalog unavailable"))
+    def test_every_offered_opencode_model_has_exactly_one_catalog_record(self):
+        # One edit of models.json adds a route; the catalog it ships with must
+        # cover it, or OpenCode refuses the route at its first call.
+        config = json.loads((ENG / "models.json").read_text())["opencode"]
+        offered = {m for role in ("plan", "write", "audit", "repair") for m in config[role]}
+        cataloged = {f"{provider}/{model}" for provider, spec in config["_catalog"].items()
+                     for model in spec["models"]}
+        self.assertEqual(offered, cataloged)
+        self.assertEqual(offered, set(config["_model_settings"]))
+        for provider, spec in config["_catalog"].items():
+            self.assertEqual(provider, spec["id"])
+            self.assertTrue(spec["npm"])
 
     @staticmethod
     def ambient_env(td):
@@ -11926,7 +12125,11 @@ class OpenCodeTransport(unittest.TestCase):
         }
 
     def assert_private_env_absent(self, env):
-        controlled = {"OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB"}
+        controlled = {"OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_DB",
+                      "OPENCODE_MODELS_PATH"}
+        if "OPENCODE_MODELS_PATH" in env:
+            self.assertNotEqual("/tmp/poison-models.json", env["OPENCODE_MODELS_PATH"])
+            self.assertEqual("1", env["OPENCODE_DISABLE_MODELS_FETCH"])
         for name in self.ambient_env("/tmp"):
             if (name.startswith("SUMM_")
                     or name.upper().startswith("OPENCODE_") and name not in controlled
@@ -11971,49 +12174,43 @@ class OpenCodeTransport(unittest.TestCase):
                              agent["permissions"])
 
     def test_selected_key_is_memory_only_and_all_content_storage_is_in_run(self):
-        credential = [{"integrationID": "vendor", "active": True,
-                       "value": {"type": "key", "key": "test-only-secret"}}]
         config = {"opencode": {"_credential_envs": {
             "vendor": "SUMM_TEST_OPENCODE_KEY", "other": "OPENAI_API_KEY"}},
                   "another": {"_optional_credential_envs": {
                       "other": "SUMM_OTHER_PROVIDER_KEY"}}}
-        with tempfile.TemporaryDirectory() as td, \
-                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
-                unittest.mock.patch.dict(os.environ, self.ambient_env(td), clear=True), \
-                unittest.mock.patch.object(subprocess, "run", return_value=
-                    subprocess.CompletedProcess([], 0, json.dumps(credential), "")) as process:
-            wd = pathlib.Path(td).resolve()
-            env = self.ms.opencode_env("vendor/model", wd)
-            self.assertEqual("test-only-secret", env["SUMM_TEST_OPENCODE_KEY"])
-            self.assertEqual([self.ms.OPENCODE, "auth", "export", "--standalone", "vendor"],
-                             process.call_args.args[0])
-            auth = process.call_args.kwargs["env"]
-            self.assertEqual(wd / ".oc", process.call_args.kwargs["cwd"])
-            self.assertEqual(str(wd / "saved-data"), auth["XDG_DATA_HOME"])
-            self.assertNotIn("OPENCODE_DB", auth)
-            self.assertNotIn("SUMM_TEST_OPENCODE_KEY", auth)
-            for child in (env, auth):
-                self.assert_private_env_absent(child)
-                for variable in ("OPENCODE_SIMULATE", "OPENCODE_MODELS_PATH",
-                                 "OPENCODE_MODELS_URL", "OPENCODE_CLIENT",
-                                 "OPENCODE_CONFIG_CONTENT", "opencode_future_control",
-                                 "OPENAI_API_KEY", "SUMM_OTHER_PROVIDER_KEY"):
-                    self.assertNotIn(variable, child)
-                self.assertEqual("1", child["OPENCODE_CONFIG_PROJECT_DISABLE"])
-                for variable in ("PWD", "HOME", "USERPROFILE", "XDG_CACHE_HOME",
-                                 "XDG_STATE_HOME", "XDG_CONFIG_HOME", "OPENCODE_CONFIG",
-                                 "OPENCODE_CONFIG_DIR", "TMPDIR", "TMP", "TEMP"):
-                    self.assertTrue(pathlib.Path(child[variable]).is_relative_to(wd))
+        with tempfile.TemporaryDirectory() as td:
+            parent = self.ambient_env(td)
+            parent.pop("OPENCODE_DB")
+            saved = saved_opencode_store(parent["XDG_DATA_HOME"], [
+                ("vendor", {"type": "key", "key": "test-only-secret"}, 1)])
+            before = credential_rows(saved)
+            with unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                    unittest.mock.patch.dict(os.environ, parent, clear=True), \
+                    unittest.mock.patch.object(subprocess, "run") as process:
+                wd = pathlib.Path(td).resolve() / "work"
+                env = self.ms.opencode_env("vendor/model", wd)
+                # Reading the saved key never starts OpenCode on the user's store.
+                process.assert_not_called()
+                self.assertEqual("test-only-secret", env["SUMM_TEST_OPENCODE_KEY"])
+                self.assert_private_env_absent(env)
+                for variable in ("OPENCODE_SIMULATE", "OPENCODE_MODELS_URL",
+                                 "OPENCODE_CLIENT", "OPENCODE_CONFIG_CONTENT",
+                                 "opencode_future_control", "OPENAI_API_KEY",
+                                 "SUMM_OTHER_PROVIDER_KEY", "SUMM_LOGIN_DIR"):
+                    self.assertNotIn(variable, env)
+                self.assertEqual(str(self.catalog_path), env["OPENCODE_MODELS_PATH"])
                 for variable in ("PATH", "LANG", "LC_ALL", "TZ", "HTTPS_PROXY",
                                  "http_proxy", "NO_PROXY", "SSL_CERT_FILE",
                                  "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "SystemRoot",
                                  "WINDIR", "ComSpec", "PATHEXT"):
-                    self.assertEqual(os.environ[variable], child[variable])
-            for variable in ("PWD", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
-                             "XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR",
-                             "OPENCODE_DB", "TMPDIR", "TMP", "TEMP"):
-                self.assertTrue(pathlib.Path(env[variable]).is_relative_to(wd))
-            self.assertEqual("1", env["OPENCODE_CONFIG_PROJECT_DISABLE"])
+                    self.assertEqual(os.environ[variable], env[variable])
+                for variable in ("PWD", "HOME", "USERPROFILE", "XDG_DATA_HOME",
+                                 "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
+                                 "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR",
+                                 "OPENCODE_DB", "TMPDIR", "TMP", "TEMP"):
+                    self.assertTrue(pathlib.Path(env[variable]).is_relative_to(wd))
+                self.assertEqual("1", env["OPENCODE_CONFIG_PROJECT_DISABLE"])
+            self.assertEqual(before, credential_rows(saved))
             for file in wd.rglob("*"):
                 if file.is_file():
                     self.assertNotIn("test-only-secret", file.read_text())
@@ -12032,29 +12229,29 @@ class OpenCodeTransport(unittest.TestCase):
                 spec["api_key_env"] = "HTTPS_PROXY"
                 spec["models"]["model-a"]["api_key_env"] = "SSL_CERT_FILE"
                 parent["SUMM_RUNTIME_JSON"] = json.dumps(snapshot)
+                parent.pop("OPENCODE_DB")
                 if supplied_key:
                     parent["SUMM_TEST_OPENCODE_KEY"] = "selected-test-key"
+                else:
+                    saved_opencode_store(parent["XDG_DATA_HOME"], [
+                        ("vendor", credential[0]["value"], 1)])
                 children = []
 
                 def fake_run(argv, **kw):
                     children.append(kw["env"])
-                    output = json.dumps(credential) if argv[1] == "auth" else self.response()
-                    return subprocess.CompletedProcess(argv, 0, output, "")
+                    return subprocess.CompletedProcess(argv, 0, self.response(), "")
 
                 with unittest.mock.patch.dict(os.environ, parent, clear=True), \
                         unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
                         unittest.mock.patch.object(subprocess, "run", fake_run):
                     self.ms.run("SOURCE BYTES", pathlib.Path(td),
                                 ["opencode:vendor/model"], "plan001", validate=json.loads)
-                self.assertEqual(1 if supplied_key else 2, len(children))
+                self.assertEqual(1, len(children))
                 for child in children:
                     self.assert_private_env_absent(child)
                     for name in ("LANG", "HTTPS_PROXY", "SSL_CERT_FILE"):
                         self.assertNotIn(name, child)
                     self.assertEqual(parent["SystemRoot"], child["SystemRoot"])
-                if not supplied_key:
-                    self.assertNotIn("SUMM_TEST_OPENCODE_KEY", children[0])
-                    self.assertNotIn("OPENCODE_DB", children[0])
                 self.assertEqual("selected-test-key", children[-1]["SUMM_TEST_OPENCODE_KEY"])
 
     def test_credential_storage_names_fail_closed(self):
@@ -12181,90 +12378,148 @@ class OpenCodeTransport(unittest.TestCase):
         config.assert_not_called()
         process.assert_not_called()
 
-    def test_credential_discovery_resolves_the_real_home_before_isolating_it(self):
+    def test_credential_discovery_reads_the_real_home_store_not_the_isolated_one(self):
         config = {"opencode": {"_credential_envs": {
             "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
-        credential = [{"integrationID": "vendor", "active": True,
-                       "value": {"type": "key", "key": "test-only-secret"}}]
-        with tempfile.TemporaryDirectory() as td, \
-                unittest.mock.patch.dict(os.environ, {}, clear=True), \
-                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
-                unittest.mock.patch.object(pathlib.Path, "home",
-                    return_value=pathlib.Path(td) / "real-home"), \
-                unittest.mock.patch.object(subprocess, "run", return_value=
-                    subprocess.CompletedProcess([], 0, json.dumps(credential), "")) as process:
-            wd = pathlib.Path(td).resolve()
-            env = self.ms.opencode_env("vendor/model", wd)
-            auth = process.call_args.kwargs["env"]
-            self.assertEqual(str(wd / "real-home" / ".local" / "share"),
-                             auth["XDG_DATA_HOME"])
-            self.assertEqual(str(wd / ".oc" / "home"), auth["HOME"])
-            self.assertEqual(auth["HOME"], auth["USERPROFILE"])
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td).resolve() / "real-home"
+            saved_opencode_store(home / ".local" / "share", [
+                ("vendor", {"type": "key", "key": "test-only-secret"}, 1)])
+            with unittest.mock.patch.dict(os.environ, {
+                        "SUMM_RUNTIME_JSON": EMPTY_RUNTIME}, clear=True), \
+                    unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                    unittest.mock.patch.object(pathlib.Path, "home", return_value=home), \
+                    unittest.mock.patch.object(subprocess, "run") as process:
+                wd = pathlib.Path(td).resolve() / "work"
+                env = self.ms.opencode_env("vendor/model", wd)
+            process.assert_not_called()
+            self.assertEqual("test-only-secret", env["SUMM_TEST_OPENCODE_KEY"])
+            self.assertEqual(str(wd / ".oc" / "home"), env["HOME"])
             self.assertEqual(str(wd / ".oc" / "data"), env["XDG_DATA_HOME"])
 
-    def _oauth_env(self, td, exports, min_valid=0, imported=0):
-        """Run opencode_env against scripted credential exports/imports."""
+    def test_missing_or_unsupported_saved_stores_are_explicit_preflight_failures(self):
         config = {"opencode": {"_credential_envs": {
             "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
-        self.addCleanup(self.ms._drop_oauth_stores)
+        for case in ("no-store", "no-row", "custom-db", "not-a-store"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as td:
+                data = pathlib.Path(td) / "saved-data"
+                env = {"XDG_DATA_HOME": str(data), "SUMM_RUNTIME_JSON": EMPTY_RUNTIME}
+                if case == "no-row":
+                    saved_opencode_store(data, [("other", {"type": "key", "key": "k"}, 1)])
+                elif case == "custom-db":
+                    saved_opencode_store(data, [("vendor", {"type": "key", "key": "k"}, 1)])
+                    env["OPENCODE_DB"] = str(pathlib.Path(td) / "elsewhere.db")
+                elif case == "not-a-store":
+                    (data / "opencode").mkdir(parents=True)
+                    (data / "opencode" / "opencode.db").write_text("not sqlite")
+                with unittest.mock.patch.dict(os.environ, env, clear=True), \
+                        unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                        unittest.mock.patch.object(subprocess, "run") as process, \
+                        self.assertRaises(self.ms.AuthPreflight) as raised:
+                    self.ms.opencode_env("vendor/model", pathlib.Path(td) / "work")
+                process.assert_not_called()
+                if case != "not-a-store":
+                    self.assertIn("SUMM_TEST_OPENCODE_KEY", str(raised.exception))
+
+    LOGINS = {"vendor": {"vendor-headless": ["accountID"]}}
+
+    def _oauth_env(self, td, rows, min_valid=0, imported=0, clock=None):
+        """Run opencode_env against a saved store; only `auth import` may run."""
+        config = {"opencode": {"_credential_envs": {
+            "vendor": "SUMM_TEST_OPENCODE_KEY"}, "_subscription_logins": self.LOGINS}}
+        data, logins = pathlib.Path(td) / "saved-data", pathlib.Path(td) / "logins"
+        logins.mkdir(exist_ok=True)
+        if rows is not None:
+            saved_opencode_store(data, rows)
         calls = []
-        replies = iter(exports)
 
         def run(cmd, **kwargs):
             calls.append((cmd, kwargs))
-            if cmd[1:3] == ["auth", "import"]:
-                return subprocess.CompletedProcess(cmd, imported, "", "")
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(next(replies)), "")
+            self.assertEqual(["auth", "import", "--standalone"], cmd[1:])
+            if clock is not None:
+                clock[0] += clock[1]
+            return subprocess.CompletedProcess(cmd, imported, "", "")
         with unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
-                unittest.mock.patch.dict(os.environ, {}, clear=True), \
-                unittest.mock.patch.object(pathlib.Path, "home",
-                    return_value=pathlib.Path(td) / "saved-home"), \
-                unittest.mock.patch.object(subprocess, "run", side_effect=run):
-            env = self.ms.opencode_env("vendor/model", pathlib.Path(td), min_valid)
+                unittest.mock.patch.dict(os.environ, {
+                    "XDG_DATA_HOME": str(data), "SUMM_LOGIN_DIR": str(logins),
+                    "SUMM_RUNTIME_JSON": EMPTY_RUNTIME}, clear=True), \
+                unittest.mock.patch.object(subprocess, "run", side_effect=run), \
+                (unittest.mock.patch.object(self.ms.time, "time", lambda: clock[0])
+                 if clock is not None else contextlib.nullcontext()):
+            env = self.ms.opencode_env("vendor/model", pathlib.Path(td) / "work", min_valid)
         return env, calls
 
     @staticmethod
     def _login(hours, **value):
-        return [{"integrationID": "vendor", "active": True, "id": "cred_test",
-                 "value": {"type": "oauth", "access": "test-only-access",
-                           "refresh": "test-only-refresh",
-                           "expires": int((time.time() + hours * 3600) * 1000),
-                           **value}}]
+        return {"type": "oauth", "methodID": "vendor-headless",
+                "access": "test-only-access", "refresh": "test-only-refresh",
+                "expires": int((time.time() + hours * 3600) * 1000),
+                "metadata": {"accountID": "test-account", "extra": "not-copied"},
+                **value}
 
     def test_subscription_login_is_borrowed_without_its_refresh_token(self):
-        # A run-local copy that refreshed would rotate the owner's own login
-        # out from under OpenCode, so only the access token may be staged.
+        # A staged copy that could refresh would rotate the owner's own login.
         with tempfile.TemporaryDirectory() as td:
-            wd = pathlib.Path(td).resolve()
-            env, calls = self._oauth_env(td, [self._login(48)], min_valid=1800)
-            self.assertEqual(["export", "import"], [c[0][2] for c in calls])
-            staged = json.loads(calls[1][1]["input"])
-            self.assertEqual("", staged[0]["value"]["refresh"])
-            self.assertEqual("test-only-access", staged[0]["value"]["access"])
-            store = pathlib.Path(env["XDG_DATA_HOME"])
-            self.assertEqual(wd / ".oc", store.parent)
-            self.assertEqual(str(store), calls[1][1]["env"]["XDG_DATA_HOME"])
-            self.assertTrue(env["OPENCODE_DB"].startswith(str(store)))
+            logins = pathlib.Path(td).resolve() / "logins"
+            env, calls = self._oauth_env(td, [("vendor", self._login(48), 1)],
+                                         min_valid=1800)
+            self.assertEqual(1, len(calls))
+            staged = json.loads(calls[0][1]["input"])[0]
+            self.assertEqual("", staged["value"]["refresh"])
+            self.assertEqual("test-only-access", staged["value"]["access"])
+            self.assertEqual({"accountID": "test-account"}, staged["value"]["metadata"])
+            store = pathlib.Path(env["XDG_DATA_HOME"]).resolve()
+            self.assertEqual(logins, store.parent)
+            self.assertEqual(str(store), str(pathlib.Path(
+                calls[0][1]["env"]["XDG_DATA_HOME"]).resolve()))
+            self.assertFalse(store.is_relative_to(pathlib.Path(td).resolve() / "work"),
+                             "a staged login must never sit in retained evidence")
+            self.assertTrue(env["OPENCODE_DB"].startswith(env["XDG_DATA_HOME"]))
             self.assertNotIn("test-only", json.dumps(env))
             self.assertNotIn("SUMM_TEST_OPENCODE_KEY", env)
-            # Later calls reuse the staged copy instead of re-exporting.
-            again, more = self._oauth_env(td, [], min_valid=1800)
+            # Later calls reuse the staged copy instead of reading again.
+            again, more = self._oauth_env(td, None, min_valid=1800)
             self.assertEqual(env, again)
             self.assertEqual([], more)
             self.ms._drop_oauth_stores()
-            self.assertFalse(store.exists(), "a borrowed token outlived the run")
+            self.assertFalse(store.exists(), "a borrowed token outlived the process")
 
-    def test_a_login_expiring_within_the_call_aborts_before_staging(self):
+    def test_readonly_login_and_expiry(self):
+        # OpenCode selects the active login first, then the newest. An active
+        # login too close to expiry is refused without touching any store.
         with tempfile.TemporaryDirectory() as td:
-            with self.assertRaisesRegex(self.ms.Abort, "expires too soon"):
-                self._oauth_env(td, [self._login(0.25)], min_valid=1800)
-            self.assertEqual([], list((pathlib.Path(td) / ".oc").glob("oauth-*")))
+            data = pathlib.Path(td) / "saved-data"
+            database, writer = saved_opencode_store(data, [
+                ("vendor", self._login(48, access="inactive-access"), 0),
+                ("vendor", self._login(0.1), 1),
+                ("unrelated", {"type": "key", "key": "unrelated-key"}, 1)],
+                keep_open=True)
+            try:
+                self.assertTrue(database.with_name("opencode.db-wal").exists())
+                before = credential_rows(database)
+                with self.assertRaisesRegex(self.ms.AuthPreflight, "expires too soon"):
+                    self._oauth_env(td, None, min_valid=1800)
+                self.assertEqual(before, credential_rows(database))
+            finally:
+                writer.close()
+            self.assertEqual([], list((pathlib.Path(td) / "logins").iterdir()))
+        # A slow import that consumes the margin is refused before dispatch.
+        with tempfile.TemporaryDirectory() as td:
+            clock = [time.time(), 1500]
+            with self.assertRaisesRegex(self.ms.AuthPreflight, "expires too soon"):
+                self._oauth_env(td, [("vendor", self._login(0.5), 1)], clock=clock)
 
     def test_an_expiring_staged_login_is_replaced_from_the_saved_one(self):
         with tempfile.TemporaryDirectory() as td:
-            first, _ = self._oauth_env(td, [self._login(1)], min_valid=60)
-            second, calls = self._oauth_env(td, [self._login(48)], min_valid=3600)
-            self.assertEqual(["export", "import"], [c[0][2] for c in calls])
+            first, _ = self._oauth_env(td, [("vendor", self._login(1), 1)], min_valid=60)
+            database = pathlib.Path(td) / "saved-data" / "opencode" / "opencode.db"
+            import sqlite3
+            connection = sqlite3.connect(database)
+            connection.execute("UPDATE credential SET value = ?",
+                               (json.dumps(self._login(48)),))
+            connection.commit(); connection.close()
+            second, calls = self._oauth_env(td, None, min_valid=3600)
+            self.assertEqual(1, len(calls))
             self.assertNotEqual(first["XDG_DATA_HOME"], second["XDG_DATA_HOME"])
             self.ms._drop_oauth_stores()
             for env in (first, second):
@@ -12272,44 +12527,57 @@ class OpenCodeTransport(unittest.TestCase):
 
     def test_a_failed_login_import_leaves_no_staged_copy(self):
         with tempfile.TemporaryDirectory() as td:
-            with self.assertRaisesRegex(self.ms.Abort, "could not stage"):
-                self._oauth_env(td, [self._login(48)], imported=1)
-            self.assertEqual([], list((pathlib.Path(td) / ".oc").glob("oauth-*")))
+            with self.assertRaisesRegex(self.ms.AuthPreflight, "could not stage"):
+                self._oauth_env(td, [("vendor", self._login(48), 1)], imported=1)
+            self.assertEqual([], list((pathlib.Path(td) / "logins").iterdir()))
 
-    def test_malformed_credential_exports_abort_without_dispatch(self):
-        for entry in ([{"integrationID": "vendor", "active": True, "value": "x"}],
-                      [{"integrationID": "vendor", "active": True,
-                        "value": {"type": "key", "key": ""}}],
-                      [{"integrationID": "vendor", "active": True,
-                        "value": {"type": "key", "key": ["x"]}}],
-                      [{"integrationID": "vendor", "active": True,
-                        "value": {"type": "unknown"}}],
-                      self._login(48, access=""),
-                      self._login(48, expires="soon"),
-                      {"not": "a list"}):
-            with self.subTest(entry=entry), tempfile.TemporaryDirectory() as td, \
-                    self.assertRaises(self.ms.Abort):
-                self._oauth_env(td, [entry])
+    def test_malformed_or_unqualified_saved_credentials_never_launch(self):
+        for value in ("x", "[1]", {"type": "key", "key": ""},
+                      {"type": "key", "key": ["x"]}, {"type": "unknown"},
+                      self._login(48, access=""), self._login(48, expires="soon"),
+                      self._login(48, expires=True), self._login(48, expires=1.7e12),
+                      self._login(48, methodID="vendor-token-sharing"),
+                      self._login(48, metadata={})):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as td, \
+                    self.assertRaises(self.ms.AuthPreflight):
+                self._oauth_env(td, [("vendor", value, 1)])
 
-    def test_credential_timeout_cannot_copy_partial_secrets_into_call_evidence(self):
+    def test_echoed_bearer_never_reaches_evidence(self):
+        # Provider errors can echo the credential they were given.
+        sentinel = "sentinel-bearer-7f3a9c"
         config = {"opencode": {"_credential_envs": {
             "vendor": "SUMM_TEST_OPENCODE_KEY"}}}
-        error = subprocess.TimeoutExpired(
-            ["opencode", "auth", "export"], 60,
-            output='{"key":"test-only-secret"}', stderr="test-only-secret")
-        with tempfile.TemporaryDirectory() as td, \
-                unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
-                unittest.mock.patch.dict(os.environ, {}, clear=True), \
-                unittest.mock.patch.object(pathlib.Path, "home",
-                    return_value=pathlib.Path(td) / "saved-home"), \
-                unittest.mock.patch.object(subprocess, "run", side_effect=error) as process:
-            wd = pathlib.Path(td)
-            with self.assertRaisesRegex(self.ms.Abort, "credential export did not complete"):
-                self.ms.run("p", wd, ["opencode:vendor/model"], "plan001")
-            process.assert_called_once()
-            for file in wd.rglob("*"):
-                if file.is_file():
-                    self.assertNotIn("test-only-secret", file.read_text())
+        timeout = subprocess.TimeoutExpired(
+            ["opencode"], 1, output=f"partial {sentinel}".encode(),
+            stderr=f"trace {sentinel}".encode())
+        outcomes = (
+            subprocess.CompletedProcess([], 0, self.response(
+                error=f"401 invalid key {sentinel}"), f"rejected {sentinel}"),
+            timeout,
+            subprocess.CompletedProcess([], 0, self.response(
+                text=json.dumps({"ok": sentinel})), ""))
+        for outcome in outcomes:
+            with self.subTest(outcome=type(outcome).__name__), \
+                    tempfile.TemporaryDirectory() as td, \
+                    unittest.mock.patch.object(self.ms, "_model_config", return_value=config), \
+                    unittest.mock.patch.dict(os.environ, {
+                        "SUMM_TEST_OPENCODE_KEY": sentinel,
+                        "SUMM_RUNTIME_JSON": EMPTY_RUNTIME}, clear=True), \
+                    unittest.mock.patch.object(subprocess, "run", side_effect=[outcome]), \
+                    unittest.mock.patch.object(self.ms.runtime, "resource_lease",
+                                               return_value=contextlib.nullcontext(0)), \
+                    contextlib.redirect_stdout(io.StringIO()) as out, \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                wd = pathlib.Path(td)
+                with self.assertRaises(self.ms.Abort) as raised:
+                    self.ms.run("p", wd, ["opencode:vendor/model"], "plan001",
+                                validate=json.loads)
+                self.assertNotIn(sentinel, str(raised.exception))
+                self.assertNotIn(sentinel, out.getvalue() + err.getvalue())
+                files = [f for f in wd.rglob("*") if f.is_file()]
+                self.assertTrue(files)
+                for file in files:
+                    self.assertNotIn(sentinel.encode(), file.read_bytes(), file)
 
     def test_missing_finish_is_reconciled_from_the_exact_completed_native_turn(self):
         text = '{"ok":true}'
@@ -12400,6 +12668,7 @@ class OpenCodeTransport(unittest.TestCase):
                 self.assertTrue(pathlib.Path(env[variable]).is_relative_to(wd))
             self.assertEqual("1", env["OPENCODE_CONFIG_PROJECT_DISABLE"])
             rec = json.loads((wd / "calls.jsonl").read_text())
+            self.assertEqual("test-digest", rec["opencode_catalog_sha256"])
             self.assertEqual("stop", rec["finish_reason"])
             self.assertEqual("session-test", rec["response_id"])
             self.assertEqual(0.01, rec["cost_usd"])
@@ -14421,6 +14690,8 @@ class MuseSubscriptionTransport(unittest.TestCase):
             self.assertEqual("SYNTHETIC-SECRET", os.environ["META_API_KEY"])
 
     def test_unproved_subscription_aborts_before_model_or_fallback(self):
+        # Never a Muse turn, never API billing. A backup on another harness
+        # answers; without one the run stops with the login message.
         bad = (
             {**self.status, "allowance": None, "reason": "api_key"},
             {**self.status, "allowance": None, "reason": "no_subscription"},
@@ -14429,15 +14700,37 @@ class MuseSubscriptionTransport(unittest.TestCase):
             {**self.status, "schemaVersion": 99}, None, [], {},
         )
         for status in bad:
+            calls = []
+
+            def dispatch(argv, **kw):
+                calls.append(argv)
+                if argv[0] == self.ms.MUSE:
+                    return subprocess.CompletedProcess(
+                        argv, 0, json.dumps(status), "SYNTHETIC-SECRET")
+                return subprocess.CompletedProcess(argv, 0, '{"ok":true}', "")
             with self.subTest(status=status), tempfile.TemporaryDirectory() as td, \
+                    unittest.mock.patch.object(self.ms.subprocess, "run", dispatch), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                wd = pathlib.Path(td)
+                self.assertEqual('{"ok":true}', self.ms.run(
+                    "payload", wd, [f"muse:{self.model}", "codex:example"], "plan001"))
+                self.assertEqual([[self.ms.MUSE, "usage", "--json"]], [
+                    argv[:3] for argv in calls if argv[0] == self.ms.MUSE])
+                records = [json.loads(line) for line in
+                           (wd / "calls.jsonl").read_text().splitlines()]
+                self.assertEqual([("muse", "auth"), ("codex", "ok")],
+                                 [(r["harness"], r["outcome"]) for r in records])
+                self.assertNotIn("SYNTHETIC-SECRET", (wd / "calls.jsonl").read_text())
+            with tempfile.TemporaryDirectory() as td, \
                     unittest.mock.patch.object(self.ms.subprocess, "run",
                         return_value=subprocess.CompletedProcess(
-                            [], 0, json.dumps(status), "SYNTHETIC-SECRET")) as dispatch:
+                            [], 0, json.dumps(status), "SYNTHETIC-SECRET")) as only, \
+                    contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(self.ms.Abort, "API billing is not allowed"):
                     self.ms.run("payload", pathlib.Path(td),
-                                [f"muse:{self.model}", "codex:example"], "plan001")
-                self.assertEqual(1, dispatch.call_count)
-                self.assertEqual("usage", dispatch.call_args.args[0][1])
+                                [f"muse:{self.model}"], "plan001")
+                self.assertEqual(1, only.call_count)
+                self.assertEqual("usage", only.call_args.args[0][1])
 
     def test_failed_or_malformed_usage_never_exposes_auth_diagnostics(self):
         errors = (

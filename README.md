@@ -68,14 +68,18 @@ Opus plans, while Sonnet writes, reviews, and repairs. The desktop app remembers
 the last selected profile; a CLI invocation with
 no harness or profile uses the shared default. OpenCode v2 is required, and
 its sessions stay inside the Summer work directory. Each OpenCode route uses
-the provider's saved credential (`opencode auth login <provider>`) or its API-key
-environment variable. With a subscription login, such as ChatGPT for OpenAI,
+its API-key environment variable or the provider's credential saved by
+`opencode auth login <provider>`, which Summer reads without starting OpenCode
+on your own store. With a subscription login, such as ChatGPT for OpenAI,
 Summer copies only the short-lived access token, never the refresh token, into
-a private store that is deleted when the run's process exits. A login that
-would expire during a call stops the run; using OpenCode once with that
-provider, or logging in again, renews it. Each run also downloads the public
-[models.dev](https://models.dev) catalog once, so OpenCode recognizes models
-released after its own version; that copy stays in the work directory.
+a private temporary directory that is deleted when the run ends, including
+after cancellation. A hard-killed process or power loss can leave that
+directory in the system temporary folder until it is cleaned. A missing login,
+or one that would expire during a call, skips that harness in favor of the next
+backup on a different harness; using OpenCode once with that provider, or
+signing in again, renews it. OpenCode receives a fixed model catalog from
+[`src/models.json`](src/models.json) instead of downloading one, so it
+recognizes the configured models even when they are newer than its own release.
 OpenCode supplies native Anthropic prompt caching; Summer retains cache reads,
 cache writes, and reported cost in the run ledger. Reuse depends on an unchanged
 prompt prefix within the cache lifetime.
@@ -89,7 +93,9 @@ subscription. Update the Muse CLI, sign in with `muse login`, and check
 `muse usage` before choosing Wonder in the desktop role menus or running
 `--harness muse`. Summer verifies the subscription through the CLI before each
 Muse call and excludes `META_API_KEY` from that child process. A missing
-subscription or a stored API credential stops the run before a model turn.
+subscription or a stored API credential skips Muse before any Muse model
+turn; a backup on a different harness answers instead, and without one the run
+stops with the login message.
 Contributor mode permits Meta to use submitted content for training; see
 [Muse Code subscriptions](https://dev.meta.ai/docs/muse-code/subscriptions).
 Spark remains available through the subscription as well. Saved API credentials

@@ -32,6 +32,13 @@ def _option(harness: str, model: str, value: str = "", role: str = "",
     name = setting.get("option")
     if not name or name == "model":
         return {}
+    supported = model_config.setting_values(harness, model, roster_value)
+    if value and supported and value not in supported:
+        # A saved setting the model no longer offers is never quietly
+        # replaced or passed on to fail inside the model CLI.
+        raise runtime.ConfigError(
+            f"{role or 'backup'}: {harness}:{model} no longer offers {name} "
+            f"{value!r}; choose one of: {', '.join(supported)}")
     chosen = value or model_config.setting_default(
         harness, model, role, roster_value)
     return {name: chosen} if isinstance(chosen, str) and chosen else {}

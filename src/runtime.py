@@ -16,6 +16,7 @@ import random
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -46,7 +47,7 @@ _CREDENTIAL_CONTROL_NAMES = frozenset({
     "ARGV_SAFE_BYTES", "RETRIES", "CALL_TIMEOUT", "WARM_BUDGET_S", "WARM_POLL_MAX_S",
     "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
     "PWD", "TMPDIR", "TMP", "TEMP", "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
-    "SUMM_PROGRESS", "SUMM_ACTIVE_ROLES", "SUMM_LOCAL_ONLY", "SUMM_QUALIFICATION_COURT",
+    "SUMM_PROGRESS", "SUMM_LOGIN_DIR", "SUMM_ACTIVE_ROLES", "SUMM_LOCAL_ONLY", "SUMM_QUALIFICATION_COURT",
     "SUMM_QUICK", "SUMM_QUIET", "SUMM_DEADLINE", "SUMM_ROUTE_CAPABILITIES",
     "SUMM_ROUTE_CAPABILITY_WORDS", "SUMM_ROUTE_OUTPUT_WORDS",
     "SUMM_ROUTE_CONTEXT_TOKENS", "SUMM_ROUTE_OUTPUT_TOKENS",
@@ -372,18 +373,43 @@ def app_dir() -> pathlib.Path:
     return base / "summer"
 
 
-# OpenCode stores holding a borrowed subscription access token, under a run's
-# `.oc` directory. Each worker deletes its own at exit; a killed worker cannot.
-STAGED_LOGIN_PREFIX = "oauth-"
+# Locator of the controller's private directory for credential-bearing
+# OpenCode files. Only Summer workers receive it; model CLIs never do.
+LOGIN_DIR_ENV = "SUMM_LOGIN_DIR"
 
 
-def drop_staged_logins(root: pathlib.Path) -> int:
-    """Delete borrowed logins from a kept work root once its workers stopped."""
-    stores = [path for oc in pathlib.Path(root).rglob(".oc") if oc.is_dir()
-              for path in oc.glob(f"{STAGED_LOGIN_PREFIX}*") if path.is_dir()]
-    for path in stores:
+def dispose_login_dir(path: pathlib.Path) -> str | None:
+    """Delete a login directory Summer created; return why it could not be."""
+    path = pathlib.Path(path)
+    for attempt in range(20):
+        # Windows refuses to delete a file another process still has open.
         shutil.rmtree(path, ignore_errors=True)
-    return len(stores)
+        if not os.path.lexists(path):
+            return None
+        time.sleep(0.25 * (attempt + 1))
+    return f"staged credentials could not be removed: {path}"
+
+
+@contextlib.contextmanager
+def login_dir():
+    """One owner-private directory per CLI invocation, outside every work root.
+
+    Workers stage subscription logins and OpenCode's matching databases here.
+    It is deleted after they stop, including when cancellation killed them.
+    """
+    path = pathlib.Path(tempfile.mkdtemp(prefix="summer-logins-"))
+    previous = os.environ.get(LOGIN_DIR_ENV)
+    os.environ[LOGIN_DIR_ENV] = str(path)
+    try:
+        yield path
+    finally:
+        if previous is None:
+            os.environ.pop(LOGIN_DIR_ENV, None)
+        else:
+            os.environ[LOGIN_DIR_ENV] = previous
+        problem = dispose_login_dir(path)
+        if problem:
+            print(f"summer: {problem}", file=sys.stderr)
 
 
 def atomic_text(path: pathlib.Path, value: str) -> None:

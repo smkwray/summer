@@ -1165,7 +1165,6 @@ def do_tts(targets, raw_text, work_dir=None, out_dir=None, cancel=None,
             if target_entered:
                 target_lease.__exit__(None, None, None)
             if work_dir:
-                runtime.drop_staged_logins(tmp)
                 print(f"  work kept: {tmp}", file=sys.stderr)
             else:
                 shutil.rmtree(tmp, ignore_errors=True)
@@ -1689,8 +1688,6 @@ def main():
         finally:
             if ephemeral_root:
                 shutil.rmtree(corpus_root, ignore_errors=True)
-            else:
-                runtime.drop_staged_logins(corpus_root)
             if work_lease:
                 work_lease.__exit__(None, None, None)
     if selected_mode.key == "tts":
@@ -2146,7 +2143,6 @@ def main():
             if target_entered:
                 target_lease.__exit__(None, None, None)
             if keep:
-                runtime.drop_staged_logins(tmp)
                 print(f"  work kept: {tmp}", file=sys.stderr)
             else:
                 shutil.rmtree(tmp, ignore_errors=True)
@@ -2180,4 +2176,8 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # Workers stage subscription logins in this directory; it is removed after
+    # they have stopped, whether the run published, failed or was cancelled.
+    with runtime.login_dir():
+        code = main()
+    sys.exit(code)
